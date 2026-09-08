@@ -12,10 +12,16 @@ import pytest
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Never touch the real settings file from a test run.
+os.environ.setdefault("PYSCOPE_CONFIG_DIR",
+                      os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "_smoke_config"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyqtgraph.Qt import QtCore, QtWidgets  # noqa: E402
 
+from pyscope import settings  # noqa: E402
+from pyscope.__main__ import parse_args, resolve_state  # noqa: E402
 from pyscope.autoset import VDIV_STEPS  # noqa: E402
 from pyscope.sources import SourceConfig  # noqa: E402
 from pyscope.ui import ScopeWindow  # noqa: E402
@@ -214,6 +220,56 @@ def main() -> int:
     while time.time() < deadline and not (win.frame and win.frame.triggered):
         app.processEvents()
         time.sleep(0.01)
+
+    # --- command line settings must survive into the widgets ---------------
+    state = resolve_state(parse_args(["-d", "hw:2,0", "-c", "4", "-r", "96000",
+                                      "-f", "S32_LE", "--simulate"]))
+    win2 = ScopeWindow(settings.state_to_config(state), restore=state)
+    win2.show()
+    assert win2.dev_combo.currentText() == "hw:2,0", (
+        "command line device lost: %r" % win2.dev_combo.currentText())
+    assert win2.rate_combo.currentText() == "96000"
+    assert win2.chan_spin.value() == 4
+    assert win2.fmt_combo.currentText() == "S32_LE"
+    assert len(win2.strips) == 4
+    assert win2.source is not None and win2.source.running, (
+        "capture should be running as soon as the window opens")
+    assert win2.running
+
+    # --- presets round-trip through the real widgets -----------------------
+    win2.tb_knob.setValue(2e-4)
+    win2.strips[0].vdiv.setValue(0.05)
+    win2.strips[2].enable.setChecked(True)
+    win2.trg_src.setCurrentIndex(2)
+    win2.trg_slope.setCurrentText("falling")
+    win2.cur_t_on.setChecked(True)
+    saved = win2.capture_state()
+    settings.save_preset("smoke", saved)
+
+    win2.reset_ui()
+    assert win2.tb_knob.value() == pytest.approx(1e-3), "reset should restore 1 ms"
+    assert win2.strips[0].vdiv.value() == pytest.approx(0.5)
+    assert win2.trg_slope.currentText() == "rising"
+    assert not win2.cur_t_on.isChecked()
+    assert win2.chan_spin.value() == 4, "reset must not touch the capture"
+    assert win2.dev_combo.currentText() == "hw:2,0"
+
+    win2.preset_combo.setCurrentText("smoke")
+    win2._preset_load()
+    assert win2.tb_knob.value() == pytest.approx(2e-4), "preset did not load"
+    assert win2.strips[0].vdiv.value() == pytest.approx(0.05)
+    assert win2.strips[2].enable.isChecked()
+    assert win2.trg_src.currentIndex() == 2
+    assert win2.trg_slope.currentText() == "falling"
+    assert win2.cur_t_on.isChecked()
+    print("preset round-trip ok:", sorted(settings.load_store()["presets"]))
+
+    # Closing stores the session, and the next launch picks it up.
+    win2.close()
+    restored = resolve_state(parse_args([]))
+    assert restored["input"]["device"] == "hw:2,0"
+    assert restored["horizontal"]["timebase"] == pytest.approx(2e-4)
+    settings.delete_preset("smoke")
 
     win.grab().save(out)
     win.close()

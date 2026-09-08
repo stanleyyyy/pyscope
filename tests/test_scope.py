@@ -2,7 +2,8 @@
 import numpy as np
 import pytest
 
-from pyscope import autoset
+from pyscope import autoset, settings
+from pyscope.__main__ import parse_args, resolve_state
 from pyscope.measure import eng, measure, parse_eng
 from pyscope.ring import RingBuffer
 from pyscope.sources import SimSource, SourceConfig, decode
@@ -337,3 +338,131 @@ def test_hysteresis_wider_than_the_signal_blocks_every_edge():
         np.float32)
     assert find_edge(x, 0.0, RISING, 0.01) is None
     assert find_edge(x, 0.0, RISING, 0.05 * (x.max() - x.min())) is not None
+
+
+# ------------------------------------------------------------------ settings
+@pytest.fixture()
+def store(tmp_path, monkeypatch):
+    monkeypatch.setenv(settings.CONFIG_ENV, str(tmp_path))
+    return tmp_path / "settings.json"
+
+
+def test_store_round_trips_presets(store):
+    state = settings.default_state(4)
+    state["trigger"]["source"] = 3
+    settings.save_preset("bench", state)
+    assert settings.load_store()["presets"]["bench"]["trigger"]["source"] == 3
+    assert store.exists()
+    settings.delete_preset("bench")
+    assert settings.load_store()["presets"] == {}
+
+
+def test_last_session_is_kept_separate_from_presets(store):
+    settings.save_preset("a", settings.default_state())
+    settings.save_last(settings.default_state(3))
+    loaded = settings.load_store()
+    assert loaded["last"]["input"]["channels"] == 3
+    assert set(loaded["presets"]) == {"a"}
+
+
+def test_load_store_survives_a_corrupt_file(store):
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text("{not json", encoding="utf-8")
+    assert settings.load_store() == settings.empty_store()
+    store.write_text("[1, 2, 3]", encoding="utf-8")
+    assert settings.load_store() == settings.empty_store()
+
+
+def test_load_store_when_nothing_saved_yet(store):
+    assert settings.load_store()["presets"] == {}
+    assert settings.load_store()["last"] is None
+
+
+def test_normalise_fills_in_missing_pieces():
+    st = settings.normalise({"input": {"channels": 4, "rate": 96000}})
+    assert len(st["channels"]) == 4
+    assert st["input"]["fmt"] == "S16_LE"          # default kept
+    assert st["input"]["rate"] == 96000            # override kept
+    assert st["channels"][2]["on"] is False        # only 1 and 2 default on
+
+
+def test_normalise_clamps_indices_to_the_channel_count():
+    st = settings.normalise({"input": {"channels": 2},
+                             "trigger": {"source": 7},
+                             "cursors": {"ref": 9}})
+    assert st["trigger"]["source"] == 1
+    assert st["cursors"]["ref"] == 1
+
+
+def test_normalise_trims_and_pads_the_channel_list():
+    st = settings.normalise({"input": {"channels": 3},
+                             "channels": [{"vdiv": 0.05}]})
+    assert len(st["channels"]) == 3
+    assert st["channels"][0]["vdiv"] == 0.05
+    assert st["channels"][1]["vdiv"] == 0.5        # padded with defaults
+
+
+def test_normalise_rejects_a_nonsense_channel_count():
+    st = settings.normalise({"input": {"channels": "many"}})
+    assert st["input"]["channels"] == 2
+
+
+def test_merge_ignores_none_and_recurses():
+    base = {"a": {"x": 1, "y": 2}, "b": 3}
+    assert settings.merge(base, {"a": {"y": None}}) == base
+    assert settings.merge(base, {"a": {"y": 9}}) == {"a": {"x": 1, "y": 9}, "b": 3}
+    assert base == {"a": {"x": 1, "y": 2}, "b": 3}      # untouched
+
+
+def test_state_to_config_maps_the_input_block():
+    cfg = settings.state_to_config({"input": {"device": "hw:2,0", "rate": 96000,
+                                              "channels": 4, "fmt": "S32_LE"}})
+    assert (cfg.device, cfg.rate, cfg.channels, cfg.fmt) == ("hw:2,0", 96000, 4,
+                                                             "S32_LE")
+
+
+# ----------------------------------------------------- command line resolution
+def test_cli_overrides_the_stored_session(store):
+    saved = settings.default_state(2)
+    saved["input"].update(device="plughw:1,0", rate=44100)
+    saved["horizontal"]["timebase"] = 5e-4
+    settings.save_last(saved)
+
+    state = resolve_state(parse_args(["-d", "hw:2,0", "-c", "4", "-r", "96000",
+                                      "-f", "S32_LE"]))
+    assert state["input"]["device"] == "hw:2,0"     # command line wins
+    assert state["input"]["rate"] == 96000
+    assert state["input"]["channels"] == 4
+    assert state["horizontal"]["timebase"] == 5e-4  # session kept otherwise
+    assert len(state["channels"]) == 4
+
+
+def test_stored_session_is_used_when_the_cli_is_silent(store):
+    saved = settings.default_state(2)
+    saved["input"]["device"] = "plughw:2,0"
+    settings.save_last(saved)
+    assert resolve_state(parse_args([]))["input"]["device"] == "plughw:2,0"
+
+
+def test_no_restore_ignores_the_stored_session(store):
+    saved = settings.default_state(2)
+    saved["input"]["device"] = "plughw:2,0"
+    settings.save_last(saved)
+    state = resolve_state(parse_args(["--no-restore"]))
+    assert state["input"]["device"] == "default"
+
+
+def test_preset_is_preferred_over_the_last_session(store):
+    last = settings.default_state(2)
+    last["input"]["device"] = "from-last"
+    settings.save_last(last)
+    preset = settings.default_state(2)
+    preset["input"]["device"] = "from-preset"
+    settings.save_preset("bench", preset)
+    state = resolve_state(parse_args(["--preset", "bench"]))
+    assert state["input"]["device"] == "from-preset"
+
+
+def test_defaults_apply_with_no_store_and_no_arguments(store):
+    state = resolve_state(parse_args([]))
+    assert state["input"] == settings.default_state()["input"]

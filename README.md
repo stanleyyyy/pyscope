@@ -48,12 +48,42 @@ python -m pyscope -d hw:1,0 -r 96000 -c 4 -f S32_LE -p 512
 python -m pyscope --simulate
 ```
 
+Capture starts as soon as the window opens.
+
 Options: `-d/--device`, `-r/--rate`, `-c/--channels`, `-f/--format`
 (`S16_LE`, `S24_3LE`, `S32_LE`, `FLOAT_LE`), `-p/--period`, `-b/--buffer`
-(ring depth in seconds), `--simulate`, `-l/--list-devices`. Everything is also
-editable live in the **Input** panel; **Apply / restart capture** reopens the
-PCM. If the driver grants different parameters than requested (common with
-`plughw:`), the panel is updated to what was actually granted.
+(ring depth in seconds), `--simulate`, `--preset NAME`, `--no-restore`,
+`-l/--list-devices`, `--list-presets`. Everything is also editable live in the
+**Input** panel; **Apply / restart capture** reopens the PCM. If the driver
+grants different parameters than requested (common with `plughw:`), the panel
+is updated to what was actually granted.
+
+## Settings and presets
+
+Settings live in `$XDG_CONFIG_HOME/pyscope/settings.json` (`~/.config/pyscope`
+by default; `PYSCOPE_CONFIG_DIR` overrides it). The file holds the last session
+and any named presets, and is written atomically — a corrupt or hand-mangled
+file is ignored rather than crashing the app, and missing or nonsensical fields
+fall back to defaults.
+
+The **Presets** panel saves every setting under a name — device, rate, channel
+count, format, per-channel gain/position/coupling, timebase, trigger and
+cursors — and loads it back, restarting capture if the input changed. Closing
+the window stores the session, and the next launch restores it.
+
+Precedence at startup is **built-in defaults → stored session (or `--preset`)
+→ command line**, so
+
+```bash
+python -m pyscope -d hw:2,0 -c 4 -r 96000 -f S32_LE
+```
+
+uses those four values and keeps your saved timebase, trigger and cursors.
+`--no-restore` starts from the built-in defaults instead.
+
+**Reset UI to defaults** returns channels, timebase, trigger and cursors to
+their defaults while leaving the capture settings and the running stream
+alone.
 
 ## Using it
 
@@ -142,6 +172,7 @@ writes the record currently on screen (time column plus one column per channel).
 | `pyscope/sources.py` | ALSA capture thread, PCM decoding, signal simulator |
 | `pyscope/trigger.py` | edge search, hold-off, record extraction |
 | `pyscope/measure.py` | automatic measurements, engineering formatting |
+| `pyscope/settings.py` | the settings schema, presets and their JSON store |
 | `pyscope/autoset.py` | picks gain, position, timebase and trigger from data |
 | `pyscope/knobs.py` | rotary knob widgets |
 | `pyscope/qtcompat.py` | enum and event access across the four Qt bindings |
@@ -157,16 +188,18 @@ never block each other, so a slow repaint costs frames but never samples.
 python -m pytest -q
 ```
 
-56 headless tests cover the ring buffer (wrap-around, oversized writes, global
+71 headless tests cover the ring buffer (wrap-around, oversized writes, global
 indices), PCM decoding for all four formats, the trigger engine (slopes,
 hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement), the
-measurements, the engineering-notation parser behind the knob fields, and the
+measurements, the engineering-notation parser behind the knob fields, the
 autoset planner (gain fitting, offset handling, stacking within the graticule,
-silence detection).
+silence detection), and the settings layer (preset round-trips, corrupt files,
+partial states, command-line precedence).
 
 The UI has its own offscreen smoke test — it builds the window, runs the
 simulator, drags both trigger handles, runs autoset and checks it finds the
-signal, then saves a screenshot:
+signal, types into the knob fields, and round-trips a preset through the real
+widgets, then saves a screenshot:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python tests/smoke_ui.py smoke.png

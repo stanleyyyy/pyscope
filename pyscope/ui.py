@@ -12,6 +12,7 @@ from . import X_DIVS, Y_DIVS, autoset, sources, trigger
 from .autoset import TIMEBASE_STEPS, VDIV_STEPS
 from .knobs import RangeKnob, StepKnob
 from .measure import eng, measure
+from . import settings
 from .qtcompat import (ALIGN_HCENTER, DASH_LINE, DASH_DOT_LINE, DOT_LINE,
                        HORIZONTAL, KEY_A, KEY_F, KEY_S, KEY_SPACE, NO_EDIT,
                        STRETCH)
@@ -88,7 +89,8 @@ class ChannelStrip(QtWidgets.QGroupBox):
 
 
 class ScopeWindow(QtWidgets.QMainWindow):
-    def __init__(self, cfg: SourceConfig, parent=None):
+    def __init__(self, cfg: SourceConfig, restore: dict | None = None,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle("pyscope - ALSA oscilloscope")
         self.resize(1360, 820)
@@ -114,7 +116,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         self._rebuild_channels()
         self._refresh_devices()
-        self._apply_config(start=cfg.simulate)
+        self._refresh_presets()
+        self._apply_config(start=True)
+        if restore:
+            # Capture is already running on the command line's terms; only the
+            # view settings come back from the stored session.
+            self._apply_view_state(settings.normalise(restore))
 
     # ------------------------------------------------------------------ plot
     def _build_plot(self) -> None:
@@ -171,6 +178,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         panel = QtWidgets.QWidget()
         vbox = QtWidgets.QVBoxLayout(panel)
         vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.addWidget(self._preset_group())
         vbox.addWidget(self._input_group())
         vbox.addWidget(self._horizontal_group())
         vbox.addWidget(self._trigger_group())
@@ -218,12 +226,39 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cl.addWidget(right, 1)
         self.setCentralWidget(central)
 
+    def _preset_group(self) -> QtWidgets.QGroupBox:
+        g = QtWidgets.QGroupBox("Presets")
+        v = QtWidgets.QVBoxLayout(g)
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.setToolTip("Named snapshots of every setting below")
+        v.addWidget(self.preset_combo)
+
+        row = QtWidgets.QHBoxLayout()
+        for text, slot, tip in (
+                ("Load", self._preset_load, "Apply the selected preset"),
+                ("Save", self._preset_save, "Store the current settings"),
+                ("Delete", self._preset_delete, "Remove the selected preset")):
+            b = QtWidgets.QPushButton(text)
+            b.setToolTip(tip)
+            b.clicked.connect(slot)
+            row.addWidget(b)
+        v.addLayout(row)
+
+        reset = QtWidgets.QPushButton("Reset UI to defaults")
+        reset.setToolTip("Default channels, timebase, trigger and cursors. "
+                         "The capture settings above are left alone.")
+        reset.clicked.connect(self.reset_ui)
+        v.addWidget(reset)
+        return g
+
     def _input_group(self) -> QtWidgets.QGroupBox:
         g = QtWidgets.QGroupBox("Input (ALSA)")
         f = QtWidgets.QFormLayout(g)
 
         self.dev_combo = QtWidgets.QComboBox()
         self.dev_combo.setEditable(True)
+        self.dev_combo.setCurrentText(self.cfg.device)
         dev_row = QtWidgets.QHBoxLayout()
         dev_row.addWidget(self.dev_combo, 1)
         rescan = QtWidgets.QPushButton("scan")
@@ -394,7 +429,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------- lifecycle
     def _refresh_devices(self) -> None:
-        current = self.dev_combo.currentText()
+        # Keep whatever is selected - on the first scan that is the device the
+        # command line asked for, which must survive the list being filled in.
+        current = self.dev_combo.currentText() or self.cfg.device
         self.dev_combo.clear()
         devs = sources.list_alsa_devices()
         if not devs:
@@ -456,6 +493,10 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.source = None
 
     def closeEvent(self, event):  # noqa: N802 (Qt naming)
+        try:
+            settings.save_last(self.capture_state())
+        except OSError as exc:      # a read-only home should not block exit
+            print("could not save settings: %s" % exc)
         self._stop_source()
         super().closeEvent(event)
 
@@ -871,6 +912,139 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for i, t in enumerate(frame.t):
                 w.writerow(["%.9g" % t] + ["%.6g" % v for v in frame.data[i]])
         self.status.showMessage("wrote %s" % path, 5000)
+
+    # ---------------------------------------------------------- persistence
+    def capture_state(self) -> dict:
+        """Everything a preset remembers."""
+        cfg = self.engine.cfg
+        return {
+            "version": settings.VERSION,
+            "input": {
+                "device": self.dev_combo.currentText().strip() or "default",
+                "rate": self.cfg.rate,
+                "channels": self.cfg.channels,
+                "fmt": self.fmt_combo.currentText(),
+                "period": int(self.period_combo.currentData() or 1024),
+                "buffer_seconds": float(self.buf_spin.value()),
+                "simulate": self.sim_check.isChecked(),
+            },
+            "channels": [{
+                "on": st.on,
+                "vdiv": st.scale,
+                "position": st.position.value(),
+                "coupling": st.coupling.currentText(),
+                "invert": st.invert.isChecked(),
+            } for st in self.strips],
+            "horizontal": {"timebase": self.tb_knob.value(),
+                           "position": self.pos_knob.value()},
+            "trigger": {"mode": cfg.mode, "source": cfg.source,
+                        "slope": cfg.slope, "level": cfg.level,
+                        "hysteresis": cfg.hysteresis,
+                        "holdoff": self.trg_hold.value()},
+            "cursors": {"time_on": self.cur_t_on.isChecked(),
+                        "level_on": self.cur_y_on.isChecked(),
+                        "ref": max(self.cur_ch.currentIndex(), 0)},
+        }
+
+    def apply_state(self, state: dict, restart: bool = True) -> None:
+        """Push a stored state back into the widgets, restarting if needed."""
+        st = settings.normalise(state)
+        inp = st["input"]
+        self.dev_combo.setCurrentText(inp["device"])
+        self.rate_combo.setCurrentText(str(inp["rate"]))
+        self.chan_spin.setValue(int(inp["channels"]))
+        self.fmt_combo.setCurrentText(inp["fmt"])
+        self.period_combo.setCurrentText(str(inp["period"]))
+        self.buf_spin.setValue(float(inp["buffer_seconds"]))
+        self.sim_check.setChecked(bool(inp["simulate"]))
+        if restart:
+            self._apply_config(start=True)      # rebuilds the channel strips
+        else:
+            self.cfg = self._collect_config()
+            self._rebuild_channels()
+        self._apply_view_state(st)
+
+    def _apply_view_state(self, st: dict) -> None:
+        """The parts that do not touch capture: channels, timebase, trigger."""
+        widgets = [self.trg_mode, self.trg_src, self.trg_slope, self.trg_level,
+                   self.trg_hyst, self.trg_hold, self.tb_knob, self.pos_knob,
+                   self.cur_t_on, self.cur_y_on, self.cur_ch]
+        for w in widgets + self.strips:
+            w.blockSignals(True)
+        try:
+            for cs, strip in zip(st["channels"], self.strips):
+                strip.enable.setChecked(bool(cs["on"]))
+                strip.vdiv.setValue(float(cs["vdiv"]))
+                strip.position.setValue(float(cs["position"]))
+                strip.coupling.setCurrentText(cs["coupling"])
+                strip.invert.setChecked(bool(cs["invert"]))
+            self.tb_knob.setValue(float(st["horizontal"]["timebase"]))
+            self.pos_knob.setValue(float(st["horizontal"]["position"]))
+            trg = st["trigger"]
+            self.trg_mode.setCurrentText(trg["mode"])
+            self.trg_src.setCurrentIndex(int(trg["source"]))
+            self.trg_slope.setCurrentText(trg["slope"])
+            self.trg_level.setValue(float(trg["level"]))
+            self.trg_hyst.setValue(float(trg["hysteresis"]))
+            self.trg_hold.setValue(float(trg["holdoff"]))
+            cur = st["cursors"]
+            self.cur_t_on.setChecked(bool(cur["time_on"]))
+            self.cur_y_on.setChecked(bool(cur["level_on"]))
+            self.cur_ch.setCurrentIndex(int(cur["ref"]))
+        finally:
+            for w in widgets + self.strips:
+                w.blockSignals(False)
+        self.engine.cfg.position = self.pos_knob.value() / 100.0
+        self._trigger_changed()
+        self._cursors_toggled()
+        self.engine.reset()
+        self._redraw()
+
+    def reset_ui(self) -> None:
+        """Back to default view settings, leaving the capture alone."""
+        st = settings.default_state(self.cfg.channels)
+        st["input"] = self.capture_state()["input"]
+        self._apply_view_state(settings.normalise(st))
+        self.status.showMessage("view settings reset to defaults", 5000)
+
+    def _preset_names(self) -> list:
+        return sorted(settings.load_store()["presets"])
+
+    def _refresh_presets(self, select=None) -> None:
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        self.preset_combo.addItems(self._preset_names())
+        if select is not None:
+            self.preset_combo.setCurrentText(select)
+        self.preset_combo.blockSignals(False)
+
+    def _preset_load(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        preset = settings.load_store()["presets"].get(name)
+        if not preset:
+            self.status.showMessage("no preset named %s" % name, 5000)
+            return
+        self.apply_state(preset, restart=True)
+        self.status.showMessage("loaded preset %s" % name, 5000)
+
+    def _preset_save(self) -> None:
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save preset", "Preset name:",
+            text=self.preset_combo.currentText().strip())
+        name = (name or "").strip()
+        if not ok or not name:
+            return
+        settings.save_preset(name, self.capture_state())
+        self._refresh_presets(select=name)
+        self.status.showMessage("saved preset %s" % name, 5000)
+
+    def _preset_delete(self) -> None:
+        name = self.preset_combo.currentText().strip()
+        if not name:
+            return
+        settings.delete_preset(name)
+        self._refresh_presets()
+        self.status.showMessage("deleted preset %s" % name, 5000)
 
     # ------------------------------------------------------------- shortcuts
     def keyPressEvent(self, event):  # noqa: N802 (Qt naming)

@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 smoke.png
 capture.csv
+tests/_smoke_config/
