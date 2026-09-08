@@ -352,18 +352,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
         knobs.addStretch(1)
         f.addRow(self._wrap(knobs))
 
-        # A fixed hysteresis that is wider than the signal blocks every edge,
-        # which is indistinguishable from "the trigger is broken". Track the
-        # source channel's own amplitude by default.
-        self.trg_auto_hyst = QtWidgets.QCheckBox("auto hysteresis")
-        self.trg_auto_hyst.setToolTip(
-            "Track 5% of the source channel's amplitude. A fixed band wider "
-            "than the signal blocks every edge.")
-        self.trg_auto_hyst.setChecked(True)
-        self.trg_auto_hyst.toggled.connect(
-            lambda on: self.trg_hyst.setEnabled(not on))
-        self.trg_hyst.setEnabled(False)
-        f.addRow(self.trg_auto_hyst)
 
         row = QtWidgets.QHBoxLayout()
         half = QtWidgets.QPushButton("Level to 50%")
@@ -630,6 +618,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cfg.holdoff = self.trg_hold.value() / 1000.0
         if cfg.mode == trigger.SINGLE:
             self.engine.armed_single = True
+        auto = cfg.mode == trigger.AUTO
+        self.trg_hyst.setEnabled(not auto)
+        self.trg_hyst.setToolTip(
+            "Tracked automatically in auto mode (5% of the signal); yours to "
+            "set in normal and single." if auto
+            else "Band an edge must cross cleanly. Too wide and nothing "
+                 "triggers at all.")
         if self.strips:
             strip = self.strips[min(cfg.source, len(self.strips) - 1)]
             self.trg_group.setTitle("Trigger - watching CH%d" % (cfg.source + 1))
@@ -745,7 +740,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             record = self._record_len(rate)
             want = min(src.ring.available, max(record * 3, record + rate // 10))
             block, start_global = src.ring.snapshot(want)
-            if self.trg_auto_hyst.isChecked() and block.shape[0]:
+            if self.engine.cfg.mode == trigger.AUTO and block.shape[0]:
                 self._auto_hysteresis(block)
             frame = self.engine.acquire(block, start_global, rate, record)
             if frame is None and self.engine.cfg.mode != trigger.AUTO:
@@ -767,6 +762,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._update_status()
 
     def _auto_hysteresis(self, block: np.ndarray) -> None:
+        """Track 5% of the source channel's amplitude, in auto mode only.
+
+        A fixed band wider than the signal blocks every edge, which is
+        indistinguishable from a broken trigger. Auto mode is where the scope
+        is finding the signal for you, so it follows the amplitude there and
+        hands the measured value over when you switch to normal or single.
+        """
         ch = min(self.engine.cfg.source, block.shape[1] - 1)
         x = block[:, ch]
         span = float(x.max() - x.min())

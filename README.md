@@ -110,9 +110,10 @@ and the trace shifts under it.
 **Hysteresis** is the band an edge must cross cleanly: the signal has to arm
 below `level − hyst` before a rising edge counts, which stops noise on the
 threshold from retriggering. A band wider than the signal blocks *every* edge,
-which looks exactly like a broken trigger — so **auto hysteresis** (on by
-default) tracks 5 % of the source channel's amplitude. Turn it off to set the
-band by hand.
+which looks exactly like a broken trigger. In `auto` mode the scope is finding
+the signal for you, so it tracks 5 % of the source channel's amplitude there
+and hands the measured value over when you switch to `normal` or `single` —
+where the knob is yours to set.
 
 When `normal` or `single` finds no edge the status bar says why, e.g.
 `NO TRIG (CH1 spans -60 mFS..60 mFS - level -80 mFS is outside that range)` or

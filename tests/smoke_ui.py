@@ -178,19 +178,22 @@ def main() -> int:
     win.tb_knob.edit.editingFinished.emit()
     assert win.tb_knob.value() == pytest.approx(500e-6)
 
-    # A weak signal must still trigger: hysteresis has to follow the amplitude.
-    assert win.trg_auto_hyst.isChecked()
-    assert not win.trg_hyst.isEnabled(), "auto mode should own the knob"
+    # A weak signal must still trigger: hysteresis follows the amplitude in
+    # auto mode, then carries over to normal.
+    win.trg_mode.setCurrentText("auto")
+    assert not win.trg_hyst.isEnabled(), "auto mode owns the hysteresis knob"
     win.source.cfg.sim_specs = [{"wave": "sine", "freq": 1000.0, "amp": 0.0025},
                                 {"wave": "sine", "freq": 250.0, "amp": 0.002}]
     win.strips[0].vdiv.setValue(0.001)
-    win.trg_mode.setCurrentText("normal")
     win.trg_level.setValue(0.0)
     # Let the ring refill, otherwise the first frame is still the loud signal.
     settle = time.time() + 0.6
     while time.time() < settle:
         app.processEvents()
         time.sleep(0.01)
+    win.trg_mode.setCurrentText("normal")
+    assert win.trg_hyst.isEnabled(), "normal mode hands the knob back"
+    assert win.trg_hyst.edit.isEnabled(), "and its field with it"
     win.frame = None
     deadline = time.time() + 3.0
     while time.time() < deadline and not (win.frame and win.frame.triggered):

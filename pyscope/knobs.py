@@ -11,12 +11,13 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from .measure import parse_eng
 from .qtcompat import (ALIGN_CENTER, ANTIALIASING, FLAT_CAP, LEFT_BUTTON,
-                       ROUND_CAP, SHIFT_MODIFIER, SIZE_VER_CURSOR, SOLID_LINE,
-                       STRONG_FOCUS, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_UP,
-                       event_pos)
+                       ELIDE_RIGHT, ROUND_CAP, SHIFT_MODIFIER, SIZE_VER_CURSOR,
+                       SOLID_LINE, STRONG_FOCUS, WINDOW_TEXT, KEY_DOWN,
+                       KEY_LEFT, KEY_RIGHT, KEY_UP, event_pos)
 
 SWEEP = 270.0        # degrees of travel, 7 o'clock round to 5 o'clock
 START = 225.0        # pointer angle at minimum, measured like Qt (0 = 3 o'clock)
+TITLE_H = 14         # caption band, kept clear of the arc below it
 PIXELS_PER_TURN = 200.0   # drag distance covering a continuous knob's range
 
 
@@ -35,7 +36,7 @@ class Knob(QtWidgets.QWidget):
         self._drag_frac = 0.0
         self.setFocusPolicy(STRONG_FOCUS)
         self.setCursor(SIZE_VER_CURSOR)
-        self.setFixedSize(diameter + 30, diameter + 36)
+        self.setFixedSize(diameter + 30, diameter + TITLE_H + 30)
 
         # The dial gives you the gesture; the field gives you the exact number
         # and lets you type one in ("500 us", "20 mFS", "-0.0005").
@@ -100,16 +101,21 @@ class Knob(QtWidgets.QWidget):
         p.setRenderHint(ANTIALIASING, True)
         w = self.width()
         d = self.diameter
-        cx, cy = w / 2.0, 14 + d / 2.0
+        # The arc sits 5 px outside the body, so the body starts a clear 5 px
+        # below the caption band instead of the arc running through the text.
+        cx, cy = w / 2.0, TITLE_H + 5 + d / 2.0
         rect = QtCore.QRectF(cx - d / 2.0, cy - d / 2.0, d, d)
         frac = min(max(self._frac(), 0.0), 1.0)
 
         if self.title:
-            p.setPen(QtGui.QColor("#b6c1cb"))
+            # Palette colour: a hard-coded light grey disappeared on a light
+            # desktop theme.
+            p.setPen(self.palette().color(WINDOW_TEXT))
             f = p.font()
             f.setPointSizeF(max(7.5, f.pointSizeF() - 0.5))
             p.setFont(f)
-            p.drawText(QtCore.QRectF(0, 0, w, 12), ALIGN_CENTER, self.title)
+            title = QtGui.QFontMetrics(f).elidedText(self.title, ELIDE_RIGHT, w)
+            p.drawText(QtCore.QRectF(0, 0, w, TITLE_H), ALIGN_CENTER, title)
 
         # Track, then the travelled arc in the knob's accent colour.
         track = QtCore.QRectF(rect.adjusted(-5, -5, 5, 5))

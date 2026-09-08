@@ -45,6 +45,8 @@ KEY_LEFT = qt_enum(QtCore.Qt, "Key", "Key_Left")
 KEY_RIGHT = qt_enum(QtCore.Qt, "Key", "Key_Right")
 
 ANTIALIASING = qt_enum(QtGui.QPainter, "RenderHint", "Antialiasing")
+WINDOW_TEXT = qt_enum(QtGui.QPalette, "ColorRole", "WindowText")
+ELIDE_RIGHT = qt_enum(QtCore.Qt, "TextElideMode", "ElideRight")
 NO_EDIT = qt_enum(QtWidgets.QAbstractItemView, "EditTrigger", "NoEditTriggers")
 STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
 
