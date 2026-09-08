@@ -21,6 +21,31 @@ CH_COLORS = ["#ffd400", "#00d0ff", "#ff5dd0", "#5dff8f",
              "#ff8c40", "#c0c0ff", "#ff6060", "#40e0d0"]
 
 
+def qt_enum(owner, scope: str, name: str):
+    """Fetch an enum member across Qt bindings.
+
+    Qt6 bindings (PyQt6, PySide6) only expose enums through their scope
+    (`Qt.PenStyle.DashLine`); Qt5 bindings expose them unscoped as well, and a
+    few members are missing from one form or the other. Try scoped first, then
+    fall back, so the app runs on whichever binding pyqtgraph picked.
+    """
+    holder = getattr(owner, scope, None)
+    if holder is not None and hasattr(holder, name):
+        return getattr(holder, name)
+    return getattr(owner, name)
+
+
+DASH_LINE = qt_enum(QtCore.Qt, "PenStyle", "DashLine")
+DOT_LINE = qt_enum(QtCore.Qt, "PenStyle", "DotLine")
+DASH_DOT_LINE = qt_enum(QtCore.Qt, "PenStyle", "DashDotLine")
+HORIZONTAL = qt_enum(QtCore.Qt, "Orientation", "Horizontal")
+KEY_SPACE = qt_enum(QtCore.Qt, "Key", "Key_Space")
+KEY_S = qt_enum(QtCore.Qt, "Key", "Key_S")
+KEY_F = qt_enum(QtCore.Qt, "Key", "Key_F")
+NO_EDIT = qt_enum(QtWidgets.QAbstractItemView, "EditTrigger", "NoEditTriggers")
+STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
+
+
 def _seq_125(lo: float, hi: float) -> list[float]:
     """1-2-5 sequence covering [lo, hi], the way scope knobs step."""
     out: list[float] = []
@@ -148,17 +173,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         self.trig_line = pg.InfiniteLine(
             angle=0, movable=True, pen=pg.mkPen("#ff4040", width=1,
-                                                style=QtCore.Qt.DashLine))
+                                                style=DASH_LINE))
         self.trig_line.sigPositionChangeFinished.connect(self._trig_line_moved)
         self.pi.addItem(self.trig_line)
 
         self.trig_marker = pg.InfiniteLine(
             angle=90, movable=False, pen=pg.mkPen("#ff4040", width=1,
-                                                  style=QtCore.Qt.DotLine))
+                                                  style=DOT_LINE))
         self.trig_marker.setPos(0.0)
         self.pi.addItem(self.trig_marker)
 
-        cur_pen = pg.mkPen("#ffffff", width=1, style=QtCore.Qt.DashDotLine)
+        cur_pen = pg.mkPen("#ffffff", width=1, style=DASH_DOT_LINE)
         self.cur_t = [pg.InfiniteLine(angle=90, movable=True, pen=cur_pen)
                       for _ in range(2)]
         self.cur_y = [pg.InfiniteLine(angle=0, movable=True, pen=cur_pen)
@@ -198,9 +223,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             ["Ch", "Vpp", "Vmax", "Vmin", "Mean", "RMS", "Freq", "Period",
              "Duty", "Rise"])
         self.table.verticalHeader().setVisible(False)
-        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setEditTriggers(NO_EDIT)
         self.table.horizontalHeader().setSectionResizeMode(
-            QtWidgets.QHeaderView.Stretch)
+            STRETCH)
         self.table.setFixedHeight(150)
 
         right = QtWidgets.QWidget()
@@ -283,7 +308,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.tb_combo.currentIndexChanged.connect(self._redraw)
         f.addRow("time/div", self.tb_combo)
 
-        self.pos_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.pos_slider = QtWidgets.QSlider(HORIZONTAL)
         self.pos_slider.setRange(0, 100)
         self.pos_slider.setValue(50)
         self.pos_slider.valueChanged.connect(self._pos_changed)
@@ -682,12 +707,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
     # ------------------------------------------------------------- shortcuts
     def keyPressEvent(self, event):  # noqa: N802 (Qt naming)
         key = event.key()
-        if key == QtCore.Qt.Key_Space:
+        if key == KEY_SPACE:
             self.run_btn.toggle()
             self._toggle_run(self.run_btn.isChecked())
-        elif key == QtCore.Qt.Key_S:
+        elif key == KEY_S:
             self._single()
-        elif key == QtCore.Qt.Key_F:
+        elif key == KEY_F:
             self._force()
         else:
             super().keyPressEvent(event)
