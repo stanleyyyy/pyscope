@@ -46,9 +46,13 @@ KEY_RIGHT = qt_enum(QtCore.Qt, "Key", "Key_Right")
 
 ANTIALIASING = qt_enum(QtGui.QPainter, "RenderHint", "Antialiasing")
 WINDOW_TEXT = qt_enum(QtGui.QPalette, "ColorRole", "WindowText")
+WINDOW = qt_enum(QtGui.QPalette, "ColorRole", "Window")
 ELIDE_RIGHT = qt_enum(QtCore.Qt, "TextElideMode", "ElideRight")
 NO_EDIT = qt_enum(QtWidgets.QAbstractItemView, "EditTrigger", "NoEditTriggers")
 STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
+SCROLLBAR_OFF = qt_enum(QtCore.Qt, "ScrollBarPolicy",
+                        "ScrollBarAlwaysOff")
+NO_FRAME = qt_enum(QtWidgets.QFrame, "Shape", "NoFrame")
 
 
 def event_pos(event) -> tuple[float, float]:
@@ -56,3 +60,41 @@ def event_pos(event) -> tuple[float, float]:
     getter = getattr(event, "position", None) or getattr(event, "pos")
     p = getter()
     return float(p.x()), float(p.y())
+
+
+def _luminance(c: QtGui.QColor) -> float:
+    def channel(v: float) -> float:
+        v /= 255.0
+        return v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+    return (0.2126 * channel(c.red()) + 0.7152 * channel(c.green())
+            + 0.0722 * channel(c.blue()))
+
+
+def contrast(a: QtGui.QColor, b: QtGui.QColor) -> float:
+    """WCAG contrast ratio, 1 (identical) to 21 (black on white)."""
+    la, lb = _luminance(a), _luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def readable(color, background, target: float = 4.5) -> str:
+    """Darken or lighten `color` until it reads against `background`.
+
+    The channel colours are chosen for a black graticule; on a light desktop
+    theme the same yellow on a grey panel is nearly invisible. Keeping the hue
+    and moving only the lightness preserves the channel's identity.
+    """
+    c = QtGui.QColor(color)
+    bg = QtGui.QColor(background)
+    if contrast(c, bg) >= target:
+        return c.name()
+    h, sat, light, alpha = c.getHslF()
+    step = -0.02 if _luminance(bg) > 0.5 else 0.02
+    for _ in range(60):
+        light = min(max(light + step, 0.0), 1.0)
+        c = QtGui.QColor.fromHslF(h, sat, light, alpha)
+        if contrast(c, bg) >= target:
+            break
+        if light in (0.0, 1.0):
+            break
+    return c.name()

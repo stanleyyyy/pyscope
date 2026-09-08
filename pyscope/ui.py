@@ -15,7 +15,8 @@ from .measure import eng, measure
 from . import settings
 from .qtcompat import (ALIGN_HCENTER, DASH_LINE, DASH_DOT_LINE, DOT_LINE,
                        HORIZONTAL, KEY_A, KEY_F, KEY_S, KEY_SPACE, NO_EDIT,
-                       STRETCH)
+                       NO_FRAME, SCROLLBAR_OFF, STRETCH, WINDOW,
+                       readable)
 from .sources import COMMON_RATES, FORMATS, SourceConfig, SourceError, make_source
 from .trigger import TriggerConfig, TriggerEngine
 
@@ -35,8 +36,11 @@ class ChannelStrip(QtWidgets.QGroupBox):
         super().__init__("CH%d" % (index + 1), parent)
         self.index = index
         self.color = CH_COLORS[index % len(CH_COLORS)]
+        # The trace keeps the bright graticule colour; the caption gets a
+        # variant that actually reads against the panel behind it.
+        self.label_color = readable(self.color, self.palette().color(WINDOW))
         self.setStyleSheet("QGroupBox::title { color: %s; font-weight: bold; }"
-                           % self.color)
+                           % self.label_color)
 
         self.enable = QtWidgets.QCheckBox("on")
         self.enable.setChecked(index < 2)
@@ -93,7 +97,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
                  parent=None):
         super().__init__(parent)
         self.setWindowTitle("pyscope - ALSA oscilloscope")
-        self.resize(1360, 820)
+        self.resize(1440, 940)
 
         self.cfg = cfg
         self.source: sources.BaseSource | None = None
@@ -146,11 +150,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # the level, the vertical one slides the trigger point along the record.
         trig_pen = pg.mkPen("#ff4040", width=1, style=DASH_LINE)
         hover_pen = pg.mkPen("#ff9090", width=2, style=DASH_LINE)
+        # Anchored to its own left edge and filled with the plot background:
+        # centred on 3% of the width, the caption ran off the left of the view
+        # and its translucent box smeared over the trace.
         label_opts = {"color": "#ff8080", "movable": False,
-                      "fill": (16, 20, 24, 200)}
+                      "fill": pg.mkBrush("#101418"),
+                      "anchors": [(0.0, 1.0), (0.0, 0.0)]}
         self.trig_line = pg.InfiniteLine(angle=0, movable=True, pen=trig_pen,
                                          hoverPen=hover_pen, label="TRIG",
-                                         labelOpts=dict(label_opts, position=0.03))
+                                         labelOpts=dict(label_opts, position=0.01))
         self.trig_line.sigDragged.connect(self._trig_line_moved)
         self.pi.addItem(self.trig_line)
 
@@ -158,7 +166,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             angle=90, movable=True, pen=pg.mkPen("#ff4040", width=1,
                                                  style=DOT_LINE),
             hoverPen=hover_pen, label="T",
-            labelOpts=dict(label_opts, position=0.97))
+            labelOpts=dict(label_opts, position=0.99,
+                           anchors=[(0.0, 0.0), (0.0, 0.0)]))
         self.trig_marker.setPos(0.0)
         self.trig_marker.sigDragged.connect(self._trig_marker_moved)
         self.pi.addItem(self.trig_marker)
@@ -185,19 +194,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
         vbox.addWidget(self._cursor_group())
         vbox.addStretch(1)
 
+        # Width comes from what the controls actually need, so the column
+        # never scrolls sideways; it may still scroll down on a short screen.
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(panel)
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(340)
+        scroll.setHorizontalScrollBarPolicy(SCROLLBAR_OFF)
+        scroll.setFixedWidth(panel.sizeHint().width()
+                             + scroll.verticalScrollBar().sizeHint().width() + 8)
 
         self.ch_box = QtWidgets.QWidget()
         self.ch_layout = QtWidgets.QHBoxLayout(self.ch_box)
         self.ch_layout.setContentsMargins(4, 0, 4, 0)
         self.ch_layout.addStretch(1)
+        # Horizontal scrolling only, and only once the channels outgrow the
+        # width; the row must never be taller than its strips.
         ch_scroll = QtWidgets.QScrollArea()
         ch_scroll.setWidget(self.ch_box)
         ch_scroll.setWidgetResizable(True)
-        ch_scroll.setFixedHeight(240)
+        ch_scroll.setVerticalScrollBarPolicy(SCROLLBAR_OFF)
+        ch_scroll.setFrameShape(NO_FRAME)
+        self.ch_scroll = ch_scroll
 
         self.table = QtWidgets.QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
@@ -214,7 +231,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         rl.setContentsMargins(0, 0, 0, 0)
         rl.addWidget(self.plot, 1)
         self.cursor_label = QtWidgets.QLabel("")
-        self.cursor_label.setStyleSheet("color:#dddddd; padding:2px;")
+        self.cursor_label.setStyleSheet("padding:2px;")   # palette colour
         rl.addWidget(self.cursor_label)
         rl.addWidget(ch_scroll)
         rl.addWidget(self.table)
@@ -514,6 +531,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.ch_layout.insertWidget(self.ch_layout.count() - 1, strip)
             self.strips.append(strip)
             self.curves.append(self.pi.plot(pen=pg.mkPen(strip.color, width=1)))
+        self._fit_channel_row()
 
         names = ["CH%d" % (c + 1) for c in range(self.cfg.channels)]
         for combo in (self.trg_src, self.cur_ch):
@@ -524,6 +542,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
             combo.setCurrentIndex(min(max(keep, 0), len(names) - 1))
             combo.blockSignals(False)
         self._trigger_changed()
+
+    def _fit_channel_row(self) -> None:
+        """Give the strip row exactly the height one strip needs."""
+        height = self.ch_box.sizeHint().height() + 6
+        bar = self.ch_scroll.horizontalScrollBar()
+        if bar is not None:
+            height += bar.sizeHint().height()
+        self.ch_scroll.setFixedHeight(height)
 
     # --------------------------------------------------------------- control
     def _toggle_run(self, checked: bool) -> None:
@@ -671,7 +697,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.trg_group.setTitle("Trigger - watching CH%d" % (cfg.source + 1))
             self.trg_group.setStyleSheet(
                 "QGroupBox::title { color: %s; font-weight: bold; }"
-                % strip.color)
+                % strip.label_color)
         self._update_trigger_line()
 
     def _update_trigger_line(self) -> None:
@@ -689,6 +715,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.trig_line.setHoverPen(pg.mkPen(strip.color, width=2,
                                             style=DASH_LINE))
         self.trig_line.label.setColor(strip.color)
+        self.trig_line.label.fill = pg.mkBrush("#101418")
         self.trig_line.label.setFormat("TRIG CH%d %s %s"
                                        % (cfg.source + 1,
                                           "/" if cfg.slope == trigger.RISING
@@ -893,7 +920,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for c, text in enumerate(cells):
                 item = QtWidgets.QTableWidgetItem(text)
                 if c == 0:
-                    item.setForeground(QtGui.QColor(strip.color))
+                    item.setForeground(QtGui.QColor(strip.label_color))
                 self.table.setItem(r, c, item)
 
     def _export_csv(self) -> None:

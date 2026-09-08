@@ -87,6 +87,12 @@ alone.
 
 ## Using it
 
+Channel colours are chosen for the black graticule; captions on the control
+panels are darkened or lightened until they reach a WCAG contrast of 4.5
+against whatever your desktop theme paints behind them, keeping the hue so a
+channel is still identifiable. The traces themselves always keep the bright
+colour.
+
 **Knobs** — V/div, position, time/div, trigger position, level, hysteresis and
 hold-off are rotary knobs in the channel's own colour, each with an editable
 field underneath. Drag up/down or scroll to turn, hold shift for fine steps on
@@ -175,7 +181,7 @@ writes the record currently on screen (time column plus one column per channel).
 | `pyscope/settings.py` | the settings schema, presets and their JSON store |
 | `pyscope/autoset.py` | picks gain, position, timebase and trigger from data |
 | `pyscope/knobs.py` | rotary knob widgets |
-| `pyscope/qtcompat.py` | enum and event access across the four Qt bindings |
+| `pyscope/qtcompat.py` | enum, event and colour-contrast helpers across bindings |
 | `pyscope/ui.py` | Qt/pyqtgraph front end |
 
 Capture runs in its own thread and only ever appends to the ring buffer; the UI
