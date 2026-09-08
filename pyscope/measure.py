@@ -1,6 +1,8 @@
 """Automatic waveform measurements on a single captured record."""
 from __future__ import annotations
 
+import re
+
 import numpy as np
 
 MEASUREMENTS = ("vpp", "vmax", "vmin", "mean", "rms", "std",
@@ -113,3 +115,22 @@ def eng(value: float, unit: str = "", digits: int = 4) -> str:
         if a >= scale:
             return "%.*g %s%s" % (digits, value / scale, p, unit)
     return "%.*g %s" % (digits, value, unit)
+
+
+_PREFIXES = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "m": 1e-3,
+             "k": 1e3, "M": 1e6, "G": 1e9}
+_NUMBER = re.compile(r"^([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)\s*"
+                     r"([pnuµmkMG])?")
+
+
+def parse_eng(text: str) -> float | None:
+    """Inverse of `eng`: read "500 us", "20 mFS", "1.5k", "-0.02" as a number.
+
+    The unit itself is ignored - only the SI prefix scales the value - so
+    "2 ms" and "2 m" both give 0.002. Returns None if nothing parses.
+    """
+    m = _NUMBER.match(str(text).strip().replace(",", "."))
+    if not m:
+        return None
+    value = float(m.group(1))
+    return value * _PREFIXES.get(m.group(2) or "", 1.0)

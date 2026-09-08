@@ -180,7 +180,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         scroll = QtWidgets.QScrollArea()
         scroll.setWidget(panel)
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(320)
+        scroll.setFixedWidth(340)
 
         self.ch_box = QtWidgets.QWidget()
         self.ch_layout = QtWidgets.QHBoxLayout(self.ch_box)
@@ -334,9 +334,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
                                    fmt=lambda v: eng(v, "FS"), title="level",
                                    color="#ff8080", default=0.0)
         self.trg_level.valueChanged.connect(self._trigger_changed)
+        # No snapping: auto mode drives this with a measured value that can be
+        # far finer than the manual step.
         self.trg_hyst = RangeKnob(0.0, 0.5, 0.0005, fmt=lambda v: eng(v, "FS"),
                                   title="hysteresis", color="#ff8080",
-                                  default=0.01)
+                                  default=0.01, snap=False)
         self.trg_hyst.valueChanged.connect(self._trigger_changed)
         self.trg_hold = RangeKnob(0.0, 1000.0, 0.5,
                                   fmt=lambda v: "%.1f ms" % v,
@@ -349,6 +351,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
             knobs.addWidget(k)
         knobs.addStretch(1)
         f.addRow(self._wrap(knobs))
+
+        # A fixed hysteresis that is wider than the signal blocks every edge,
+        # which is indistinguishable from "the trigger is broken". Track the
+        # source channel's own amplitude by default.
+        self.trg_auto_hyst = QtWidgets.QCheckBox("auto hysteresis")
+        self.trg_auto_hyst.setToolTip(
+            "Track 5% of the source channel's amplitude. A fixed band wider "
+            "than the signal blocks every edge.")
+        self.trg_auto_hyst.setChecked(True)
+        self.trg_auto_hyst.toggled.connect(
+            lambda on: self.trg_hyst.setEnabled(not on))
+        self.trg_hyst.setEnabled(False)
+        f.addRow(self.trg_auto_hyst)
 
         row = QtWidgets.QHBoxLayout()
         half = QtWidgets.QPushButton("Level to 50%")
@@ -730,6 +745,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             record = self._record_len(rate)
             want = min(src.ring.available, max(record * 3, record + rate // 10))
             block, start_global = src.ring.snapshot(want)
+            if self.trg_auto_hyst.isChecked() and block.shape[0]:
+                self._auto_hysteresis(block)
             frame = self.engine.acquire(block, start_global, rate, record)
             if frame is None and self.engine.cfg.mode != trigger.AUTO:
                 # Record why nothing fired, so a level parked off the signal
@@ -749,6 +766,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 self._redraw()
         self._update_status()
 
+    def _auto_hysteresis(self, block: np.ndarray) -> None:
+        ch = min(self.engine.cfg.source, block.shape[1] - 1)
+        x = block[:, ch]
+        span = float(x.max() - x.min())
+        h = min(max(0.05 * span, 1e-6), 0.5)
+        if abs(h - self.engine.cfg.hysteresis) > 1e-9:
+            self.engine.cfg.hysteresis = h
+            self.trg_hyst.setValue(h, notify=False)
+
     def _update_status(self) -> None:
         src = self.source
         if src is None:
@@ -757,8 +783,14 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if self._starved is not None:
             ch, lo, hi = self._starved
             level = self.engine.cfg.level
-            why = ("" if lo <= level <= hi
-                   else " - level %s is outside that range" % eng(level, "FS"))
+            hyst = self.engine.cfg.hysteresis
+            if not lo <= level <= hi:
+                why = " - level %s is outside that range" % eng(level, "FS")
+            elif hi - lo < 2 * hyst:
+                why = (" - hysteresis %s is wider than the signal"
+                       % eng(hyst, "FS"))
+            else:
+                why = ""
             trg = "NO TRIG (CH%d spans %s..%s%s)" % (ch + 1, eng(lo, "FS"),
                                                      eng(hi, "FS"), why)
         elif self.frame and self.frame.triggered:

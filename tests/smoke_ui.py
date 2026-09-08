@@ -7,6 +7,8 @@ measurements -> cursors) without a sound card or a visible display.
 """
 import os
 import sys
+
+import pytest
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -161,6 +163,47 @@ def main() -> int:
     assert "CH2" in win.trg_group.title(), win.trg_group.title()
     win.trg_src.setCurrentIndex(0)
     print("trigger group titled:", win.trg_group.title())
+
+    # --- typing into a knob's field, and auto hysteresis -------------------
+    k = win.strips[0].vdiv
+    k.edit.setText("20 mFS")
+    k.edit.editingFinished.emit()
+    assert k.value() == pytest.approx(0.02), "typed value not applied"
+    k.edit.setText("nonsense")
+    k.edit.editingFinished.emit()
+    assert k.value() == pytest.approx(0.02), "junk must not change the value"
+    assert k.edit.text() == k.text(), "field should snap back to the real value"
+
+    win.tb_knob.edit.setText("500 us")
+    win.tb_knob.edit.editingFinished.emit()
+    assert win.tb_knob.value() == pytest.approx(500e-6)
+
+    # A weak signal must still trigger: hysteresis has to follow the amplitude.
+    assert win.trg_auto_hyst.isChecked()
+    assert not win.trg_hyst.isEnabled(), "auto mode should own the knob"
+    win.source.cfg.sim_specs = [{"wave": "sine", "freq": 1000.0, "amp": 0.0025},
+                                {"wave": "sine", "freq": 250.0, "amp": 0.002}]
+    win.strips[0].vdiv.setValue(0.001)
+    win.trg_mode.setCurrentText("normal")
+    win.trg_level.setValue(0.0)
+    # Let the ring refill, otherwise the first frame is still the loud signal.
+    settle = time.time() + 0.6
+    while time.time() < settle:
+        app.processEvents()
+        time.sleep(0.01)
+    win.frame = None
+    deadline = time.time() + 3.0
+    while time.time() < deadline and not (win.frame and win.frame.triggered):
+        app.processEvents()
+        time.sleep(0.01)
+    assert win.engine.cfg.hysteresis < 0.001, (
+        "hysteresis did not follow the small signal: %r"
+        % win.engine.cfg.hysteresis)
+    assert win.frame is not None and win.frame.triggered, (
+        "a 5 mFS signal must trigger: %s" % win.status_label.text())
+    print("weak signal: hysteresis %.6f, %s"
+          % (win.engine.cfg.hysteresis, win.status_label.text()))
+    win.source.cfg.sim_specs = []
 
     # Leave the screen in a representative state for the screenshot.
     win.autoset()

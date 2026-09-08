@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from pyscope import autoset
-from pyscope.measure import eng, measure
+from pyscope.measure import eng, measure, parse_eng
 from pyscope.ring import RingBuffer
 from pyscope.sources import SimSource, SourceConfig, decode
 from pyscope.trigger import (EITHER, FALLING, NORMAL, RISING, SINGLE,
@@ -305,3 +305,35 @@ def test_autoset_step_tables_are_ordered_and_cover_the_range():
     assert autoset.VDIV_STEPS[0] == pytest.approx(1e-4)
     assert autoset.VDIV_STEPS[-1] == pytest.approx(1.0)
     assert autoset.TIMEBASE_STEPS == sorted(autoset.TIMEBASE_STEPS)
+
+
+# ------------------------------------------------------- engineering parsing
+@pytest.mark.parametrize("text,expected", [
+    ("500 us", 500e-6), ("20 mFS", 0.02), ("-0.0005", -5e-4), ("1.5k", 1500.0),
+    ("2 ms", 2e-3), ("50 %", 50.0), ("1.234 kHz", 1234.0), ("0.5 s", 0.5),
+    (".5m", 5e-4), ("1e3", 1000.0), ("  7 ", 7.0), ("2,5", 2.5),
+])
+def test_parse_eng_reads_what_eng_writes(text, expected):
+    assert parse_eng(text) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("text", ["", "abc", "FS", "--3", None])
+def test_parse_eng_rejects_junk(text):
+    assert parse_eng(text) is None
+
+
+@pytest.mark.parametrize("value,unit", [
+    (500e-6, "s"), (0.02, "FS"), (-5e-4, "FS"), (1234.0, "Hz"), (0.0, "FS"),
+])
+def test_eng_and_parse_eng_round_trip(value, unit):
+    assert parse_eng(eng(value, unit)) == pytest.approx(value, rel=1e-3,
+                                                       abs=1e-12)
+
+
+def test_hysteresis_wider_than_the_signal_blocks_every_edge():
+    """The failure that looks like a broken trigger: a 5 mFS signal cannot
+    arm across a 10 mFS band, so the fix is to scale hysteresis to the signal."""
+    x = (0.0025 * np.sin(2 * np.pi * 1000 * np.arange(4800) / RATE)).astype(
+        np.float32)
+    assert find_edge(x, 0.0, RISING, 0.01) is None
+    assert find_edge(x, 0.0, RISING, 0.05 * (x.max() - x.min())) is not None

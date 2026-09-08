@@ -58,11 +58,14 @@ PCM. If the driver grants different parameters than requested (common with
 ## Using it
 
 **Knobs** — V/div, position, time/div, trigger position, level, hysteresis and
-hold-off are rotary knobs in the channel's own colour. Drag up/down or scroll
-to turn, hold shift for fine steps on the continuous ones, double-click to
-return to the default, arrow keys when focused. Stepped knobs (V/div, time/div)
-snap to the 1‑2‑5 sequence, so a value handed to them from autoset lands on a
-real detent.
+hold-off are rotary knobs in the channel's own colour, each with an editable
+field underneath. Drag up/down or scroll to turn, hold shift for fine steps on
+the continuous ones, double-click to return to the default, arrow keys when
+focused — or type the value straight into the field. The field accepts
+engineering notation the same way the display writes it: `500 us`, `20 mFS`,
+`1.5k`, `-0.0005`; the unit is ignored and only the SI prefix scales the
+number. Stepped knobs (V/div, time/div) snap to the 1‑2‑5 sequence, so both a
+typed value and one handed over by autoset land on a real detent.
 
 **Vertical** — one strip per channel under the plot: enable, V/div, position in
 divisions, DC/AC coupling, invert. Disabled channels are
@@ -88,8 +91,7 @@ so and changes nothing.
 slide the trigger point along the record; both update live while dragging and
 the level line is labelled with its channel, slope and value. The same values
 are in the Trigger panel: source channel, rising/falling/either slope, level in FS,
-hysteresis (the signal must first arm below `level − hyst` before an edge
-counts, which stops noise from retriggering), and hold-off in ms. Modes:
+hysteresis, and hold-off in ms. Modes:
 
 - `auto` — free-runs when no edge is found, so you always see something
 - `normal` — only updates on a real edge
@@ -105,9 +107,17 @@ The trigger always sits at t = 0, so dragging the `T` marker really changes how
 much of the record is pre-trigger — the marker snaps back to the trigger point
 and the trace shifts under it.
 
+**Hysteresis** is the band an edge must cross cleanly: the signal has to arm
+below `level − hyst` before a rising edge counts, which stops noise on the
+threshold from retriggering. A band wider than the signal blocks *every* edge,
+which looks exactly like a broken trigger — so **auto hysteresis** (on by
+default) tracks 5 % of the source channel's amplitude. Turn it off to set the
+band by hand.
+
 When `normal` or `single` finds no edge the status bar says why, e.g.
-`NO TRIG (CH1 spans -60 mFS..60 mFS - level -80 mFS is outside that range)`,
-rather than leaving an apparently frozen screen.
+`NO TRIG (CH1 spans -60 mFS..60 mFS - level -80 mFS is outside that range)` or
+`... - hysteresis 10 mFS is wider than the signal`, rather than leaving an
+apparently frozen screen.
 
 **Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the channel
 named in **Y1/Y2 measured in** (they follow that channel's V/div and position).
@@ -146,11 +156,12 @@ never block each other, so a slow repaint costs frames but never samples.
 python -m pytest -q
 ```
 
-33 headless tests cover the ring buffer (wrap-around, oversized writes, global
+56 headless tests cover the ring buffer (wrap-around, oversized writes, global
 indices), PCM decoding for all four formats, the trigger engine (slopes,
 hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement), the
-measurements, and the autoset planner (gain fitting, offset handling, stacking
-within the graticule, silence detection).
+measurements, the engineering-notation parser behind the knob fields, and the
+autoset planner (gain fitting, offset handling, stacking within the graticule,
+silence detection).
 
 The UI has its own offscreen smoke test — it builds the window, runs the
 simulator, drags both trigger handles, runs autoset and checks it finds the

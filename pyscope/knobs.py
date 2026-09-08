@@ -9,6 +9,7 @@ import math
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+from .measure import parse_eng
 from .qtcompat import (ALIGN_CENTER, ANTIALIASING, FLAT_CAP, LEFT_BUTTON,
                        ROUND_CAP, SHIFT_MODIFIER, SIZE_VER_CURSOR, SOLID_LINE,
                        STRONG_FOCUS, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_UP,
@@ -25,7 +26,7 @@ class Knob(QtWidgets.QWidget):
     valueChanged = QtCore.Signal(object)
 
     def __init__(self, title: str = "", color: str = "#7fd0ff",
-                 diameter: int = 46, parent=None):
+                 diameter: int = 46, editable: bool = True, parent=None):
         super().__init__(parent)
         self.title = title
         self.color = color
@@ -34,7 +35,24 @@ class Knob(QtWidgets.QWidget):
         self._drag_frac = 0.0
         self.setFocusPolicy(STRONG_FOCUS)
         self.setCursor(SIZE_VER_CURSOR)
-        self.setFixedSize(diameter + 22, diameter + 30)
+        self.setFixedSize(diameter + 30, diameter + 36)
+
+        # The dial gives you the gesture; the field gives you the exact number
+        # and lets you type one in ("500 us", "20 mFS", "-0.0005").
+        self.edit = QtWidgets.QLineEdit(self)
+        self.edit.setAlignment(ALIGN_CENTER)
+        self.edit.setFrame(False)
+        self.edit.setFixedHeight(17)
+        self.edit.setStyleSheet(
+            "QLineEdit { background:#1b2229; color:#e8edf2; border:1px solid "
+            "#39424b; border-radius:3px; padding:0px; }"
+            "QLineEdit:focus { border:1px solid %s; }" % color)
+        f = self.edit.font()
+        f.setPointSizeF(max(7.0, f.pointSizeF() - 0.5))
+        self.edit.setFont(f)
+        self.edit.editingFinished.connect(self._edit_committed)
+        self.edit.setVisible(editable)
+        self.sync_text()
 
     # -- subclass interface ------------------------------------------------
     def value(self):
@@ -58,6 +76,24 @@ class Knob(QtWidgets.QWidget):
     def reset(self) -> None:
         raise NotImplementedError
 
+    # -- value field -------------------------------------------------------
+    def resizeEvent(self, event):  # noqa: N802
+        self.edit.setGeometry(2, self.height() - 18, self.width() - 4, 17)
+        super().resizeEvent(event)
+
+    def sync_text(self) -> None:
+        """Refresh the field unless the user is part-way through typing."""
+        if not self.edit.hasFocus():
+            self.edit.setText(self.text())
+
+    def _edit_committed(self) -> None:
+        value = parse_eng(self.edit.text())
+        if value is None:
+            self.sync_text()          # unparseable: put the real value back
+            return
+        self.setValue(value)
+        self.sync_text()
+
     # -- painting ----------------------------------------------------------
     def paintEvent(self, _event):  # noqa: N802 (Qt naming)
         p = QtGui.QPainter(self)
@@ -69,9 +105,9 @@ class Knob(QtWidgets.QWidget):
         frac = min(max(self._frac(), 0.0), 1.0)
 
         if self.title:
-            p.setPen(QtGui.QColor("#9aa4ad"))
+            p.setPen(QtGui.QColor("#b6c1cb"))
             f = p.font()
-            f.setPointSizeF(max(6.5, f.pointSizeF() - 1.5))
+            f.setPointSizeF(max(7.5, f.pointSizeF() - 0.5))
             p.setFont(f)
             p.drawText(QtCore.QRectF(0, 0, w, 12), ALIGN_CENTER, self.title)
 
@@ -98,10 +134,6 @@ class Knob(QtWidgets.QWidget):
             p.setBrush(QtGui.QBrush())
             p.drawEllipse(rect.adjusted(-7, -7, 7, 7))
 
-        p.setPen(QtGui.QColor("#e6e6e6"))
-        p.setBrush(QtGui.QBrush())
-        p.drawText(QtCore.QRectF(0, self.height() - 15, w, 14), ALIGN_CENTER,
-                   self.text())
         p.end()
 
     # -- interaction -------------------------------------------------------
@@ -174,10 +206,11 @@ class StepKnob(Knob):
     def setIndex(self, index: int, notify: bool = True) -> None:
         index = min(max(int(index), 0), len(self.values) - 1)
         if index == self._index:
-            self.update()
+            self.sync_text()
             return
         self._index = index
         self.update()
+        self.sync_text()
         if notify:
             self.valueChanged.emit(self.value())
 
@@ -203,8 +236,9 @@ class RangeKnob(Knob):
 
     def __init__(self, lo: float, hi: float, step: float, fmt=str,
                  title: str = "", color: str = "#7fd0ff", default=None,
-                 **kwargs):
+                 snap: bool = True, **kwargs):
         self.lo, self.hi, self.step = float(lo), float(hi), float(step)
+        self.snap = snap
         self.fmt = fmt
         self._value = float(default if default is not None else lo)
         self._default = self._value
@@ -215,14 +249,16 @@ class RangeKnob(Knob):
 
     def setValue(self, value, notify: bool = True) -> None:
         value = min(max(float(value), self.lo), self.hi)
-        # Snap to the step grid so displayed and stored values agree.
-        value = round(value / self.step) * self.step
-        value = min(max(value, self.lo), self.hi)
+        if self.snap:
+            # Snap to the step grid so displayed and stored values agree.
+            value = round(value / self.step) * self.step
+            value = min(max(value, self.lo), self.hi)
         if abs(value - self._value) < self.step / 1e6:
-            self.update()
+            self.sync_text()
             return
         self._value = value
         self.update()
+        self.sync_text()
         if notify:
             self.valueChanged.emit(value)
 
