@@ -124,6 +124,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.frame: trigger.Frame | None = None
         self.running = False
         self._autoset_pending = False
+        self._starved: tuple | None = None
 
         self.strips: list[ChannelStrip] = []
         self.curves: list[pg.PlotDataItem] = []
@@ -149,7 +150,11 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.pi.hideButtons()
         self.pi.setMouseEnabled(False, False)
         self.pi.showGrid(x=True, y=True, alpha=0.35)
-        self.pi.setLabel("bottom", "time", units="s")
+        # Ticks are written out explicitly below, so pyqtgraph must not also
+        # apply an SI prefix to the label - that made it read "ms" over values
+        # that were plain seconds.
+        self.pi.getAxis("bottom").enableAutoSIPrefix(False)
+        self.pi.setLabel("bottom", "time (s)")
         self.pi.setLabel("left", "divisions")
         self.pi.setYRange(-HALF_Y, HALF_Y, padding=0)
         self.pi.setDownsampling(auto=True, mode="peak")
@@ -369,9 +374,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.trg_hold.valueChanged.connect(self._trigger_changed)
         f.addRow("hold-off", self.trg_hold)
 
+        row = QtWidgets.QHBoxLayout()
+        half = QtWidgets.QPushButton("Level to 50%")
+        half.setToolTip("Put the level at the midpoint of the source channel")
+        half.clicked.connect(self.level_to_50)
         force = QtWidgets.QPushButton("Force trigger")
         force.clicked.connect(self._force)
-        f.addRow(force)
+        row.addWidget(half)
+        row.addWidget(force)
+        f.addRow(self._wrap(row))
         return g
 
     def _cursor_group(self) -> QtWidgets.QGroupBox:
@@ -513,6 +524,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.run_btn.setChecked(True)
         self.run_btn.setText("Stop")
 
+    def level_to_50(self) -> None:
+        """Drop the trigger level onto the midpoint of the source channel."""
+        src = self.source
+        if src is None:
+            return
+        n = min(src.ring.available, int(self.cfg.rate * AUTOSET_WINDOW))
+        if n < 2:
+            return
+        block, _ = src.ring.snapshot(n)
+        ch = min(self.engine.cfg.source, block.shape[1] - 1)
+        x = block[:, ch]
+        lo, hi = float(x.min()), float(x.max())
+        self.trg_level.setValue(min(max(0.5 * (lo + hi), -1.0), 1.0))
+        self.trg_hyst.setValue(min(max(0.05 * (hi - lo), 1e-4), 0.5))
+        self.engine.reset()
+        self.status.showMessage("level set to CH%d midpoint (%s of %s..%s)"
+                                % (ch + 1, eng(0.5 * (lo + hi), "FS"),
+                                   eng(lo, "FS"), eng(hi, "FS")), 6000)
+
     def _force(self) -> None:
         """Show whatever is in the buffer right now, without waiting for an edge."""
         if self.source is None:
@@ -553,6 +583,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         block, _ = src.ring.snapshot(need)
         self._apply_plan(autoset.plan(block, self.cfg.rate))
         self._autoset_pending = False
+        self._starved: tuple | None = None
         return True
 
     def _apply_plan(self, p: autoset.AutosetPlan) -> None:
@@ -617,6 +648,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.trig_line.blockSignals(True)
         self.trig_line.setPos(cfg.level / strip.scale + strip.position.value())
         self.trig_line.blockSignals(False)
+        # Wear the source channel's colour: the line is drawn in that
+        # channel's gain and position, so on a multi-channel screen it can
+        # otherwise appear to sit on a trace it has nothing to do with.
+        self.trig_line.setPen(pg.mkPen(strip.color, width=1, style=DASH_LINE))
+        self.trig_line.setHoverPen(pg.mkPen(strip.color, width=2,
+                                            style=DASH_LINE))
+        self.trig_line.label.setColor(strip.color)
         self.trig_line.label.setFormat("TRIG CH%d %s %s"
                                        % (cfg.source + 1,
                                           "/" if cfg.slope == trigger.RISING
@@ -710,6 +748,15 @@ class ScopeWindow(QtWidgets.QMainWindow):
             want = min(src.ring.available, max(record * 3, record + rate // 10))
             block, start_global = src.ring.snapshot(want)
             frame = self.engine.acquire(block, start_global, rate, record)
+            if frame is None and self.engine.cfg.mode != trigger.AUTO:
+                # Record why nothing fired, so a level parked off the signal
+                # is visible instead of just looking like a frozen screen.
+                ch = min(self.engine.cfg.source, block.shape[1] - 1)
+                x = block[:, ch] if block.shape[0] else None
+                self._starved = ((ch, float(x.min()), float(x.max()))
+                                 if x is not None and x.size else None)
+            else:
+                self._starved = None
             if frame is not None:
                 self.frame = frame
                 if (self.engine.cfg.mode == trigger.SINGLE and frame.triggered):
@@ -724,7 +771,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if src is None:
             self.status_label.setText("stopped")
             return
-        trg = "TRIG" if (self.frame and self.frame.triggered) else "auto"
+        if self._starved is not None:
+            ch, lo, hi = self._starved
+            level = self.engine.cfg.level
+            why = ("" if lo <= level <= hi
+                   else " - level %s is outside that range" % eng(level, "FS"))
+            trg = "NO TRIG (CH%d spans %s..%s%s)" % (ch + 1, eng(lo, "FS"),
+                                                     eng(hi, "FS"), why)
+        elif self.frame and self.frame.triggered:
+            trg = "TRIG"
+        else:
+            trg = "auto"
         self.status_label.setText(
             "%s | %d Hz | %d ch | %s | blocks %d | overruns %d | %s"
             % ("SIM" if self.cfg.simulate else self.cfg.device, self.cfg.rate,

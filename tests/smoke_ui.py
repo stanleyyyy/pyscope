@@ -90,6 +90,42 @@ def main() -> int:
         time.sleep(0.01)
     assert win.frame is not None and win.frame.triggered, "not running after autoset"
 
+    # --- a level parked off the signal must explain itself, not just freeze -
+    win.trg_mode.setCurrentText("normal")
+    win.trg_src.setCurrentIndex(0)
+    assert "TRIG CH1" in win.trig_line.label.format
+    win.trg_src.setCurrentIndex(1)
+    assert "TRIG CH2" in win.trig_line.label.format, "source change not shown"
+    assert win.trig_line.pen.color().name() == win.strips[1].color, (
+        "trigger line should wear the source channel's colour")
+
+    win.trg_level.setValue(0.99)          # above anything the simulator makes
+    win.frame = None
+    deadline = time.time() + 1.5
+    while time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert win.frame is None, "normal mode must not draw without an edge"
+    assert "NO TRIG" in win.status_label.text(), win.status_label.text()
+    assert "outside" in win.status_label.text(), win.status_label.text()
+    print("starved:", win.status_label.text())
+
+    win.level_to_50()                     # the one-click fix
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not (win.frame and win.frame.triggered):
+        app.processEvents()
+        time.sleep(0.01)
+    assert win.frame is not None and win.frame.triggered, "50% level did not trigger"
+    print("after level_to_50:", win.status_label.text())
+
+    win.trg_src.setCurrentIndex(0)
+    win.trg_mode.setCurrentText("auto")
+    win.level_to_50()
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not (win.frame and win.frame.triggered):
+        app.processEvents()
+        time.sleep(0.01)
+
     win.grab().save(out)
     win.close()
     QtCore.QCoreApplication.processEvents()

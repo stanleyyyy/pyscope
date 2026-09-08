@@ -77,7 +77,7 @@ show a few cycles. It starts capture first if the scope is idle, and waits for
 the buffer to fill before deciding. If every channel is below −54 dBFS it says
 so and changes nothing.
 
-**Trigger** — drag the red dashed line to set the level and the `T` marker to
+**Trigger** — drag the dashed level line to set the level and the `T` marker to
 slide the trigger point along the record; both update live while dragging and
 the level line is labelled with its channel, slope and value. The same values
 are in the Trigger panel: source channel, rising/falling/either slope, level in FS,
@@ -88,9 +88,19 @@ counts, which stops noise from retriggering), and hold-off in ms. Modes:
 - `normal` — only updates on a real edge
 - `single` — arms once, captures one record, then stops
 
+The level line is drawn in the source channel's gain and position, and wears
+that channel's colour — on a multi-channel screen it can otherwise look like it
+sits on a trace it has nothing to do with. **Level to 50 %** drops it onto the
+midpoint of the source channel's current signal, which is the quickest way to
+get a stable trigger.
+
 The trigger always sits at t = 0, so dragging the `T` marker really changes how
 much of the record is pre-trigger — the marker snaps back to the trigger point
 and the trace shifts under it.
+
+When `normal` or `single` finds no edge the status bar says why, e.g.
+`NO TRIG (CH1 spans -60 mFS..60 mFS - level -80 mFS is outside that range)`,
+rather than leaving an apparently frozen screen.
 
 **Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the selected
 reference channel (they follow that channel's V/div and position). Readout sits
