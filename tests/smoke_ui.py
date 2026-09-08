@@ -50,6 +50,46 @@ def main() -> int:
     print("cursors:", win.cursor_label.text())
     print("status:", win.status_label.text())
 
+    # --- mouse-driven trigger: drag the level line and the T marker --------
+    strip = win.strips[0]
+    win.trig_line.setPos(1.0 + strip.position.value())      # 1 division up
+    win._trig_line_moved()
+    assert abs(win.trg_level.value() - strip.scale) < 1e-6, "level drag ignored"
+    assert "TRIG CH1" in win.trig_line.label.format
+
+    lo, hi = win._time_span()
+    win.trig_marker.setPos(lo + 0.2 * (hi - lo))
+    win._trig_marker_moved()
+    assert win.pos_slider.value() == 20, "trigger point drag ignored"
+    assert win.engine.cfg.position == 0.5 - 0.3
+
+    # --- autoset: it should find the simulated signals on its own ----------
+    win.tb_combo.setCurrentIndex(0)                         # 1 us/div, far off
+    win.trg_level.setValue(0.9)                             # level off the signal
+    for st in win.strips:
+        st.enable.setChecked(False)
+    win.autoset()
+    deadline = time.time() + 3.0
+    while win._autoset_pending and time.time() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert not win._autoset_pending, "autoset never found enough data"
+    assert all(st.enable.isChecked() for st in win.strips), "channels not re-enabled"
+    assert win.trg_src.currentIndex() == 0, "should trigger on the larger CH1"
+    assert abs(win.trg_level.value()) < 0.05, "level should land mid-waveform"
+    cycles = win._timebase() * 10 * 1000.0        # screen widths of 1 kHz
+    assert 1.5 <= cycles <= 5.0, (
+        "expected a few cycles on screen, got %.1f at %s/div"
+        % (cycles, win.tb_combo.currentText()))
+    assert win.pos_slider.value() == 50
+    print("autoset:", win.status.currentMessage())
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline and not (win.frame and win.frame.triggered):
+        app.processEvents()
+        time.sleep(0.01)
+    assert win.frame is not None and win.frame.triggered, "not running after autoset"
+
     win.grab().save(out)
     win.close()
     QtCore.QCoreApplication.processEvents()

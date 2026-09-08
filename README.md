@@ -68,7 +68,19 @@ how much of the record is pre-trigger (0 % = trigger at the left edge, 50 % =
 centred). Record length is `time/div × 10 × rate` samples, taken from the ring
 buffer, so the pre-trigger history is real captured data.
 
-**Trigger** — source channel, rising/falling/either slope, level in FS,
+**Autoset** — the `Autoset` button (or `a`) looks at a quarter second of the
+live buffer and configures everything for what it finds: it enables the
+channels carrying signal, picks a gain so each fills its share of the screen,
+stacks them so they do not overlap, centres each on its own DC level, triggers
+on the strongest channel at its waveform midpoint, and sets the timebase to
+show a few cycles. It starts capture first if the scope is idle, and waits for
+the buffer to fill before deciding. If every channel is below −54 dBFS it says
+so and changes nothing.
+
+**Trigger** — drag the red dashed line to set the level and the `T` marker to
+slide the trigger point along the record; both update live while dragging and
+the level line is labelled with its channel, slope and value. The same values
+are in the Trigger panel: source channel, rising/falling/either slope, level in FS,
 hysteresis (the signal must first arm below `level − hyst` before an edge
 counts, which stops noise from retriggering), and hold-off in ms. Modes:
 
@@ -76,8 +88,9 @@ counts, which stops noise from retriggering), and hold-off in ms. Modes:
 - `normal` — only updates on a real edge
 - `single` — arms once, captures one record, then stops
 
-Drag the dashed red line to set the level; the dotted vertical line marks the
-trigger point (t = 0).
+The trigger always sits at t = 0, so dragging the `T` marker really changes how
+much of the record is pre-trigger — the marker snaps back to the trigger point
+and the trace shifts under it.
 
 **Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the selected
 reference channel (they follow that channel's V/div and position). Readout sits
@@ -88,7 +101,7 @@ period, duty cycle, 10‑90 % rise time. Frequency comes from hysteresis-qualifi
 mid-level crossings, falling back to a parabolically-interpolated FFT peak when
 the record holds less than two cycles.
 
-**Keys** — `space` run/stop, `s` single, `f` force trigger. **Export CSV**
+**Keys** — `space` run/stop, `s` single, `f` force trigger, `a` autoset. **Export CSV**
 writes the record currently on screen (time column plus one column per channel).
 
 ## Layout
@@ -99,6 +112,7 @@ writes the record currently on screen (time column plus one column per channel).
 | `pyscope/sources.py` | ALSA capture thread, PCM decoding, signal simulator |
 | `pyscope/trigger.py` | edge search, hold-off, record extraction |
 | `pyscope/measure.py` | automatic measurements, engineering formatting |
+| `pyscope/autoset.py` | picks gain, position, timebase and trigger from data |
 | `pyscope/ui.py` | Qt/pyqtgraph front end |
 
 Capture runs in its own thread and only ever appends to the ring buffer; the UI
@@ -111,14 +125,15 @@ never block each other, so a slow repaint costs frames but never samples.
 python -m pytest -q
 ```
 
-26 headless tests cover the ring buffer (wrap-around, oversized writes, global
+33 headless tests cover the ring buffer (wrap-around, oversized writes, global
 indices), PCM decoding for all four formats, the trigger engine (slopes,
-hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement) and the
-measurements.
+hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement), the
+measurements, and the autoset planner (gain fitting, offset handling, stacking
+within the graticule, silence detection).
 
 The UI has its own offscreen smoke test — it builds the window, runs the
-simulator, checks that a trigger fires and CH1 measures 1 kHz, and saves a
-screenshot:
+simulator, drags both trigger handles, runs autoset and checks it finds the
+signal, then saves a screenshot:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python tests/smoke_ui.py smoke.png

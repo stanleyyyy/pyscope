@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 
+from pyscope import autoset
 from pyscope.measure import eng, measure
 from pyscope.ring import RingBuffer
 from pyscope.sources import SimSource, SourceConfig, decode
@@ -234,3 +235,73 @@ def test_simulator_channel_count_is_honoured():
     src = SimSource(SourceConfig(rate=RATE, channels=5, simulate=True))
     assert src.generate(0, 256).shape == (256, 5)
     assert len(src.specs()) == 5
+
+
+# ------------------------------------------------------------------- autoset
+def test_snap_rounds_up_and_near():
+    steps = [1e-3, 2e-3, 5e-3, 1e-2]
+    assert autoset.snap(2.5e-3, steps, "up") == 5e-3
+    assert autoset.snap(2.5e-3, steps, "near") == 2e-3
+    assert autoset.snap(99.0, steps, "up") == 1e-2       # clamps to the top
+    assert autoset.snap(float("nan"), steps, "up") in steps
+
+
+def test_autoset_picks_the_strongest_channel_and_fits_it():
+    weak = sine(1000.0, n=RATE // 4, amp=0.05)
+    strong = sine(250.0, n=RATE // 4, amp=0.6)
+    block = np.stack([weak, strong], axis=1)
+    p = autoset.plan(block, RATE)
+
+    assert p.found and p.source == 1
+    assert all(c.active for c in p.channels)
+    # Two active channels share the 8 divisions, so each is sized to ~3.75:
+    # 1.2 Vpp -> 0.5 FS/div, 0.1 Vpp -> 0.05 FS/div.
+    assert p.channels[1].vdiv == pytest.approx(0.5)
+    assert p.channels[0].vdiv == pytest.approx(0.05)
+    # Three cycles of 250 Hz across ten divisions -> 1.2 ms/div, snapped to 1 ms.
+    assert p.timebase == pytest.approx(1e-3)
+    assert p.level == pytest.approx(0.0, abs=0.02)
+    assert p.hysteresis == pytest.approx(0.05 * 1.2, rel=0.1)
+
+
+def test_autoset_centres_a_dc_offset_signal():
+    x = sine(1000.0, n=RATE // 4, amp=0.2) + 0.5
+    p = autoset.plan(np.stack([x], axis=1), RATE)
+    cp = p.channels[0]
+    # Gain opens up from 0.1 so the 0.5 FS offset fits the position range,
+    # then the trace is pushed down by exactly that offset.
+    assert cp.vdiv == pytest.approx(0.2)
+    assert cp.position == pytest.approx(-0.5 / cp.vdiv, rel=0.05)
+    assert abs(cp.position) <= autoset.Y_LIMIT
+    assert p.level == pytest.approx(0.5, abs=0.02)
+
+
+def test_autoset_spreads_multiple_active_channels():
+    # The simulator's own amplitudes: near full scale, which is the case that
+    # overflows the graticule if stacked traces are each sized for 6 divisions.
+    block = np.stack([sine(1000.0, n=RATE // 4, amp=0.8),
+                      sine(250.0, n=RATE // 4, amp=0.5)], axis=1)
+    p = autoset.plan(block, RATE)
+    assert p.channels[0].position > p.channels[1].position   # stacked, not overlaid
+    # Neither trace may run off the graticule once stacked.
+    for cp in p.channels:
+        assert abs(cp.position) + 0.5 * cp.vpp / cp.vdiv <= autoset.Y_DIVS / 2
+
+
+def test_autoset_reports_no_signal_on_silence():
+    block = np.zeros((RATE // 4, 2), dtype=np.float32)
+    p = autoset.plan(block, RATE)
+    assert not p.found
+    assert not any(c.active for c in p.channels)
+
+
+def test_autoset_falls_back_to_a_default_timebase_without_a_frequency():
+    block = np.full((RATE // 4, 1), 0.5, dtype=np.float32)   # DC only
+    p = autoset.plan(block, RATE)
+    assert p.timebase == pytest.approx(1e-3)
+
+
+def test_autoset_step_tables_are_ordered_and_cover_the_range():
+    assert autoset.VDIV_STEPS[0] == pytest.approx(1e-4)
+    assert autoset.VDIV_STEPS[-1] == pytest.approx(1.0)
+    assert autoset.TIMEBASE_STEPS == sorted(autoset.TIMEBASE_STEPS)

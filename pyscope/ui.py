@@ -8,13 +8,13 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from . import sources, trigger
+from . import X_DIVS, Y_DIVS, autoset, sources, trigger
+from .autoset import TIMEBASE_STEPS, VDIV_STEPS
 from .measure import eng, measure
 from .sources import COMMON_RATES, FORMATS, SourceConfig, SourceError, make_source
 from .trigger import TriggerConfig, TriggerEngine
 
-X_DIVS = 10
-Y_DIVS = 8
+AUTOSET_WINDOW = 0.25   # seconds of data autoset inspects
 HALF_Y = Y_DIVS / 2.0
 
 CH_COLORS = ["#ffd400", "#00d0ff", "#ff5dd0", "#5dff8f",
@@ -42,27 +42,9 @@ HORIZONTAL = qt_enum(QtCore.Qt, "Orientation", "Horizontal")
 KEY_SPACE = qt_enum(QtCore.Qt, "Key", "Key_Space")
 KEY_S = qt_enum(QtCore.Qt, "Key", "Key_S")
 KEY_F = qt_enum(QtCore.Qt, "Key", "Key_F")
+KEY_A = qt_enum(QtCore.Qt, "Key", "Key_A")
 NO_EDIT = qt_enum(QtWidgets.QAbstractItemView, "EditTrigger", "NoEditTriggers")
 STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
-
-
-def _seq_125(lo: float, hi: float) -> list[float]:
-    """1-2-5 sequence covering [lo, hi], the way scope knobs step."""
-    out: list[float] = []
-    exp = math.floor(math.log10(lo))
-    while True:
-        for m in (1.0, 2.0, 5.0):
-            v = m * (10.0 ** exp)
-            if v < lo * 0.999:
-                continue
-            if v > hi * 1.001:
-                return out
-            out.append(v)
-        exp += 1
-
-
-VDIV_STEPS = _seq_125(1e-4, 1.0)          # full-scale units per division
-TIMEBASE_STEPS = _seq_125(1e-6, 1.0)      # seconds per division
 
 
 class ChannelStrip(QtWidgets.QGroupBox):
@@ -110,7 +92,8 @@ class ChannelStrip(QtWidgets.QGroupBox):
                        (self.position, "valueChanged"),
                        (self.coupling, "currentIndexChanged"),
                        (self.invert, "toggled")):
-            getattr(w, sig).connect(self.changed.emit)
+            # Swallow each widget's own argument: `changed` carries none.
+            getattr(w, sig).connect(lambda *_: self.changed.emit())
 
     @property
     def scale(self) -> float:
@@ -140,6 +123,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.engine = TriggerEngine(TriggerConfig())
         self.frame: trigger.Frame | None = None
         self.running = False
+        self._autoset_pending = False
 
         self.strips: list[ChannelStrip] = []
         self.curves: list[pg.PlotDataItem] = []
@@ -171,16 +155,25 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.pi.setDownsampling(auto=True, mode="peak")
         self.pi.setClipToView(True)
 
-        self.trig_line = pg.InfiniteLine(
-            angle=0, movable=True, pen=pg.mkPen("#ff4040", width=1,
-                                                style=DASH_LINE))
-        self.trig_line.sigPositionChangeFinished.connect(self._trig_line_moved)
+        # Both trigger handles are mouse-draggable: the horizontal line sets
+        # the level, the vertical one slides the trigger point along the record.
+        trig_pen = pg.mkPen("#ff4040", width=1, style=DASH_LINE)
+        hover_pen = pg.mkPen("#ff9090", width=2, style=DASH_LINE)
+        label_opts = {"color": "#ff8080", "movable": False,
+                      "fill": (16, 20, 24, 200)}
+        self.trig_line = pg.InfiniteLine(angle=0, movable=True, pen=trig_pen,
+                                         hoverPen=hover_pen, label="TRIG",
+                                         labelOpts=dict(label_opts, position=0.03))
+        self.trig_line.sigDragged.connect(self._trig_line_moved)
         self.pi.addItem(self.trig_line)
 
         self.trig_marker = pg.InfiniteLine(
-            angle=90, movable=False, pen=pg.mkPen("#ff4040", width=1,
-                                                  style=DOT_LINE))
+            angle=90, movable=True, pen=pg.mkPen("#ff4040", width=1,
+                                                 style=DOT_LINE),
+            hoverPen=hover_pen, label="T",
+            labelOpts=dict(label_opts, position=0.97))
         self.trig_marker.setPos(0.0)
+        self.trig_marker.sigDragged.connect(self._trig_marker_moved)
         self.pi.addItem(self.trig_marker)
 
         cur_pen = pg.mkPen("#ffffff", width=1, style=DASH_DOT_LINE)
@@ -321,11 +314,19 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.run_btn.clicked.connect(self._toggle_run)
         self.single_btn = QtWidgets.QPushButton("Single")
         self.single_btn.clicked.connect(self._single)
-        self.save_btn = QtWidgets.QPushButton("Export CSV")
-        self.save_btn.clicked.connect(self._export_csv)
-        for b in (self.run_btn, self.single_btn, self.save_btn):
+        self.auto_btn = QtWidgets.QPushButton("Autoset")
+        self.auto_btn.setToolTip("Find the signal and set gain, timebase and "
+                                 "trigger automatically (A)")
+        self.auto_btn.clicked.connect(self.autoset)
+        for b in (self.run_btn, self.single_btn, self.auto_btn):
             row.addWidget(b)
         f.addRow(self._wrap(row))
+
+        row2 = QtWidgets.QHBoxLayout()
+        self.save_btn = QtWidgets.QPushButton("Export CSV")
+        self.save_btn.clicked.connect(self._export_csv)
+        row2.addWidget(self.save_btn)
+        f.addRow(self._wrap(row2))
         return g
 
     def _trigger_group(self) -> QtWidgets.QGroupBox:
@@ -525,6 +526,72 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.frame = TriggerEngine._frame(block, pre, pre, n, rate, False)
         self._redraw()
 
+    # ----------------------------------------------------------- autoset
+    def autoset(self) -> None:
+        """Find the signal and configure gain, timebase and trigger for it."""
+        if self.source is None:
+            self._apply_config(start=True)
+            if self.source is None:
+                return
+        self.running = True
+        self.run_btn.setChecked(True)
+        self.run_btn.setText("Stop")
+        self.engine.reset()
+        if not self._try_autoset():
+            # Capture has only just started; retry from _tick once the ring
+            # holds a long enough window to measure low frequencies.
+            self._autoset_pending = True
+            self.status.showMessage("autoset: filling the buffer...", 3000)
+
+    def _try_autoset(self) -> bool:
+        src = self.source
+        if src is None:
+            return False
+        need = min(src.ring.capacity, int(self.cfg.rate * AUTOSET_WINDOW))
+        if src.ring.available < need:
+            return False
+        block, _ = src.ring.snapshot(need)
+        self._apply_plan(autoset.plan(block, self.cfg.rate))
+        self._autoset_pending = False
+        return True
+
+    def _apply_plan(self, p: autoset.AutosetPlan) -> None:
+        if not p.found:
+            self.status.showMessage(
+                "autoset: no signal found (every channel below %s Vpp)"
+                % eng(autoset.SILENCE, "FS"), 6000)
+            return
+        widgets = [self.trg_mode, self.trg_src, self.trg_slope, self.trg_level,
+                   self.trg_hyst, self.tb_combo, self.pos_slider]
+        for w in widgets + self.strips:
+            w.blockSignals(True)
+        try:
+            for cp, strip in zip(p.channels, self.strips):
+                strip.enable.setChecked(cp.active)
+                strip.vdiv.setCurrentIndex(VDIV_STEPS.index(cp.vdiv))
+                strip.position.setValue(round(cp.position * 4) / 4)
+            self.tb_combo.setCurrentIndex(TIMEBASE_STEPS.index(p.timebase))
+            self.pos_slider.setValue(50)
+            self.trg_mode.setCurrentText(trigger.AUTO)
+            self.trg_src.setCurrentIndex(p.source)
+            self.trg_slope.setCurrentText(trigger.RISING)
+            self.trg_level.setValue(p.level)
+            self.trg_hyst.setValue(p.hysteresis)
+        finally:
+            for w in widgets + self.strips:
+                w.blockSignals(False)
+        self.engine.cfg.position = 0.5
+        self.pos_label.setText("trigger at 50%")
+        self._trigger_changed()
+        self.engine.reset()
+        self._redraw()
+        active = [c.index + 1 for c in p.channels if c.active]
+        self.status.showMessage(
+            "autoset: CH%s, trigger CH%d at %s, %s/div, %s"
+            % ("+".join(str(a) for a in active), p.source + 1,
+               eng(p.level, "FS"), eng(p.timebase, "s"),
+               eng(p.channels[p.source].freq, "Hz")), 8000)
+
     def _pos_changed(self, value: int) -> None:
         self.pos_label.setText("trigger at %d%%" % value)
         self.engine.cfg.position = value / 100.0
@@ -550,12 +617,37 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.trig_line.blockSignals(True)
         self.trig_line.setPos(cfg.level / strip.scale + strip.position.value())
         self.trig_line.blockSignals(False)
+        self.trig_line.label.setFormat("TRIG CH%d %s %s"
+                                       % (cfg.source + 1,
+                                          "/" if cfg.slope == trigger.RISING
+                                          else "\\" if cfg.slope == trigger.FALLING
+                                          else "X", eng(cfg.level, "FS")))
+        if not self.trig_marker.moving:
+            self.trig_marker.blockSignals(True)
+            self.trig_marker.setPos(0.0)
+            self.trig_marker.blockSignals(False)
 
     def _trig_line_moved(self) -> None:
+        """Dragging the red line sets the trigger level, live."""
         cfg = self.engine.cfg
+        if not self.strips:
+            return
         strip = self.strips[min(cfg.source, len(self.strips) - 1)]
         level = (self.trig_line.value() - strip.position.value()) * strip.scale
         self.trg_level.setValue(min(max(level, -1.0), 1.0))
+
+    def _trig_marker_moved(self) -> None:
+        """Dragging the T marker slides the trigger point along the record.
+
+        The trigger always sits at t = 0, so moving the marker really changes
+        how much of the record is pre-trigger; the slider is the source of
+        truth and the marker snaps back to 0 on the next redraw.
+        """
+        lo, hi = self._time_span()
+        if hi <= lo:
+            return
+        frac = (self.trig_marker.value() - lo) / (hi - lo)
+        self.pos_slider.setValue(int(round(min(max(frac, 0.0), 1.0) * 100)))
 
     def _cursors_toggled(self) -> None:
         span = self._time_span()
@@ -610,6 +702,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self.status_label.setText("capture error: %s" % src.error)
             self._stop_source()
             return
+        if self._autoset_pending:
+            self._try_autoset()
         if self.running:
             rate = self.cfg.rate
             record = self._record_len(rate)
@@ -714,5 +808,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
             self._single()
         elif key == KEY_F:
             self._force()
+        elif key == KEY_A:
+            self.autoset()
         else:
             super().keyPressEvent(event)
