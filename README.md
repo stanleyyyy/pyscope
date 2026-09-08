@@ -11,12 +11,28 @@ sound card, so the UI can be developed and tested anywhere.
 
 ## Install
 
+On Debian/Ubuntu-based distributions the system Python is PEP 668 managed, so
+`pip install` into it will refuse. Use the distro packages:
+
 ```bash
-python -m pip install numpy pyqtgraph PySide6 pyalsaaudio
+sudo apt install -y python3-numpy python3-pyqtgraph python3-pyqt5 python3-alsaaudio
 ```
 
-`pyalsaaudio` needs the ALSA headers (`libasound2-dev` / `alsa-lib-devel`).
-PyQt5 works instead of PySide6 — pyqtgraph picks up whichever is installed.
+Or, for current upstream versions, a virtualenv:
+
+```bash
+sudo apt install -y python3-venv python3-dev build-essential libasound2-dev libxcb-cursor0
+python3 -m venv .venv && .venv/bin/pip install numpy pyqtgraph PySide6 pyalsaaudio
+```
+
+`pyalsaaudio` compiles against `libasound2-dev`; `libxcb-cursor0` is the Qt6
+runtime dependency PySide6 needs on Ubuntu 24.04 and later. Any of PyQt5,
+PyQt6, PySide2 or PySide6 works — pyqtgraph picks up whichever is installed,
+and the UI handles both the Qt5 and Qt6 enum conventions. Check which one was
+picked with `python3 -c "from pyqtgraph.Qt import QT_LIB; print(QT_LIB)"`.
+
+Run from the repository root — `python -m pyscope` needs the package on the
+path. There is nothing to build or install.
 
 ## Run
 
