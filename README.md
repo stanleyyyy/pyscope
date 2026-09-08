@@ -1,0 +1,121 @@
+# pyscope — a configurable ALSA oscilloscope
+
+A soft-scope for Linux audio inputs. Everything about the capture is
+configurable (device, rate, channel count, sample format, period size, ring
+depth), and the display behaves like a bench scope: 10 × 8 divisions,
+per-channel gain/position/coupling, auto/normal/single edge triggering with
+hysteresis and hold-off, draggable cursors, and automatic measurements.
+
+A built-in signal generator (`--simulate`) drives the whole pipeline without a
+sound card, so the UI can be developed and tested anywhere.
+
+## Install
+
+```bash
+python -m pip install numpy pyqtgraph PySide6 pyalsaaudio
+```
+
+`pyalsaaudio` needs the ALSA headers (`libasound2-dev` / `alsa-lib-devel`).
+PyQt5 works instead of PySide6 — pyqtgraph picks up whichever is installed.
+
+## Run
+
+```bash
+python -m pyscope --list-devices
+```
+
+```bash
+python -m pyscope -d hw:1,0 -r 96000 -c 4 -f S32_LE -p 512
+```
+
+```bash
+python -m pyscope --simulate
+```
+
+Options: `-d/--device`, `-r/--rate`, `-c/--channels`, `-f/--format`
+(`S16_LE`, `S24_3LE`, `S32_LE`, `FLOAT_LE`), `-p/--period`, `-b/--buffer`
+(ring depth in seconds), `--simulate`, `-l/--list-devices`. Everything is also
+editable live in the **Input** panel; **Apply / restart capture** reopens the
+PCM. If the driver grants different parameters than requested (common with
+`plughw:`), the panel is updated to what was actually granted.
+
+## Using it
+
+**Vertical** — one strip per channel under the plot: enable, V/div (1‑2‑5
+steps), position in divisions, DC/AC coupling, invert. Disabled channels are
+still captured, just not drawn or measured. Amplitudes are in full-scale units:
+±1.0 FS is the converter's clipping point, so 0.5 FS/div shows a full-scale
+signal as 4 divisions.
+
+**Horizontal** — time/div (1 µs … 1 s), and a trigger-position slider that sets
+how much of the record is pre-trigger (0 % = trigger at the left edge, 50 % =
+centred). Record length is `time/div × 10 × rate` samples, taken from the ring
+buffer, so the pre-trigger history is real captured data.
+
+**Trigger** — source channel, rising/falling/either slope, level in FS,
+hysteresis (the signal must first arm below `level − hyst` before an edge
+counts, which stops noise from retriggering), and hold-off in ms. Modes:
+
+- `auto` — free-runs when no edge is found, so you always see something
+- `normal` — only updates on a real edge
+- `single` — arms once, captures one record, then stops
+
+Drag the dashed red line to set the level; the dotted vertical line marks the
+trigger point (t = 0).
+
+**Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the selected
+reference channel (they follow that channel's V/div and position). Readout sits
+under the plot.
+
+**Measurements** — per enabled channel: Vpp, Vmax, Vmin, mean, RMS, frequency,
+period, duty cycle, 10‑90 % rise time. Frequency comes from hysteresis-qualified
+mid-level crossings, falling back to a parabolically-interpolated FFT peak when
+the record holds less than two cycles.
+
+**Keys** — `space` run/stop, `s` single, `f` force trigger. **Export CSV**
+writes the record currently on screen (time column plus one column per channel).
+
+## Layout
+
+| file | role |
+| --- | --- |
+| `pyscope/ring.py` | lock-protected ring buffer with a global sample counter |
+| `pyscope/sources.py` | ALSA capture thread, PCM decoding, signal simulator |
+| `pyscope/trigger.py` | edge search, hold-off, record extraction |
+| `pyscope/measure.py` | automatic measurements, engineering formatting |
+| `pyscope/ui.py` | Qt/pyqtgraph front end |
+
+Capture runs in its own thread and only ever appends to the ring buffer; the UI
+timer (40 Hz) takes a snapshot, searches it for a trigger and redraws. The two
+never block each other, so a slow repaint costs frames but never samples.
+
+## Tests
+
+```bash
+python -m pytest -q
+```
+
+26 headless tests cover the ring buffer (wrap-around, oversized writes, global
+indices), PCM decoding for all four formats, the trigger engine (slopes,
+hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement) and the
+measurements.
+
+The UI has its own offscreen smoke test — it builds the window, runs the
+simulator, checks that a trigger fires and CH1 measures 1 kHz, and saves a
+screenshot:
+
+```bash
+QT_QPA_PLATFORM=offscreen python tests/smoke_ui.py smoke.png
+```
+
+## Notes and limits
+
+- Amplitudes are full-scale, not volts. For real voltage readings, multiply by
+  your interface's input sensitivity — a fixed scale factor per channel would be
+  the natural next feature.
+- Audio interfaces are AC-coupled and band-limited: DC and very low frequencies
+  are attenuated, so square waves will droop. That is the hardware, not the app.
+- Overruns are counted in the status bar. If they climb, raise the period size
+  or lower the rate.
+- `hw:` devices give you the raw hardware format; `plughw:`/`default` let ALSA
+  convert, which is more forgiving but may resample.
