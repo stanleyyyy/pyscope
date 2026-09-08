@@ -10,7 +10,11 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from . import X_DIVS, Y_DIVS, autoset, sources, trigger
 from .autoset import TIMEBASE_STEPS, VDIV_STEPS
+from .knobs import RangeKnob, StepKnob
 from .measure import eng, measure
+from .qtcompat import (ALIGN_HCENTER, DASH_LINE, DASH_DOT_LINE, DOT_LINE,
+                       HORIZONTAL, KEY_A, KEY_F, KEY_S, KEY_SPACE, NO_EDIT,
+                       STRETCH)
 from .sources import COMMON_RATES, FORMATS, SourceConfig, SourceError, make_source
 from .trigger import TriggerConfig, TriggerEngine
 
@@ -19,32 +23,6 @@ HALF_Y = Y_DIVS / 2.0
 
 CH_COLORS = ["#ffd400", "#00d0ff", "#ff5dd0", "#5dff8f",
              "#ff8c40", "#c0c0ff", "#ff6060", "#40e0d0"]
-
-
-def qt_enum(owner, scope: str, name: str):
-    """Fetch an enum member across Qt bindings.
-
-    Qt6 bindings (PyQt6, PySide6) only expose enums through their scope
-    (`Qt.PenStyle.DashLine`); Qt5 bindings expose them unscoped as well, and a
-    few members are missing from one form or the other. Try scoped first, then
-    fall back, so the app runs on whichever binding pyqtgraph picked.
-    """
-    holder = getattr(owner, scope, None)
-    if holder is not None and hasattr(holder, name):
-        return getattr(holder, name)
-    return getattr(owner, name)
-
-
-DASH_LINE = qt_enum(QtCore.Qt, "PenStyle", "DashLine")
-DOT_LINE = qt_enum(QtCore.Qt, "PenStyle", "DotLine")
-DASH_DOT_LINE = qt_enum(QtCore.Qt, "PenStyle", "DashDotLine")
-HORIZONTAL = qt_enum(QtCore.Qt, "Orientation", "Horizontal")
-KEY_SPACE = qt_enum(QtCore.Qt, "Key", "Key_Space")
-KEY_S = qt_enum(QtCore.Qt, "Key", "Key_S")
-KEY_F = qt_enum(QtCore.Qt, "Key", "Key_F")
-KEY_A = qt_enum(QtCore.Qt, "Key", "Key_A")
-NO_EDIT = qt_enum(QtWidgets.QAbstractItemView, "EditTrigger", "NoEditTriggers")
-STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
 
 
 class ChannelStrip(QtWidgets.QGroupBox):
@@ -62,33 +40,30 @@ class ChannelStrip(QtWidgets.QGroupBox):
         self.enable = QtWidgets.QCheckBox("on")
         self.enable.setChecked(index < 2)
 
-        self.vdiv = QtWidgets.QComboBox()
-        for v in VDIV_STEPS:
-            self.vdiv.addItem(eng(v, "FS"), v)
-        # 0.5 FS/div keeps a full-scale signal inside the 8 visible divisions.
-        self.vdiv.setCurrentIndex(VDIV_STEPS.index(0.5))
-
-        self.position = QtWidgets.QDoubleSpinBox()
-        self.position.setRange(-HALF_Y, HALF_Y)
-        self.position.setSingleStep(0.25)
-        self.position.setDecimals(2)
-        self.position.setSuffix(" div")
-        self.position.setValue(2.0 if index == 0 else -2.0 if index == 1 else 0.0)
+        self.vdiv = StepKnob(VDIV_STEPS, fmt=lambda v: eng(v, "FS"),
+                             title="V/div", color=self.color, default=0.5)
+        self.position = RangeKnob(-HALF_Y, HALF_Y, 0.05,
+                                  fmt=lambda v: "%+.2f div" % v,
+                                  title="position", color=self.color,
+                                  default=2.0 if index == 0
+                                  else -2.0 if index == 1 else 0.0)
 
         self.coupling = QtWidgets.QComboBox()
         self.coupling.addItems(["DC", "AC"])
         self.invert = QtWidgets.QCheckBox("invert")
 
-        form = QtWidgets.QFormLayout(self)
-        form.setContentsMargins(6, 4, 6, 4)
-        form.setVerticalSpacing(3)
-        form.addRow(self.enable)
-        form.addRow("V/div", self.vdiv)
-        form.addRow("pos", self.position)
-        form.addRow("cpl", self.coupling)
-        form.addRow(self.invert)
+        box = QtWidgets.QVBoxLayout(self)
+        box.setContentsMargins(6, 4, 6, 4)
+        box.setSpacing(2)
+        box.addWidget(self.enable)
+        box.addWidget(self.vdiv, 0, ALIGN_HCENTER)
+        box.addWidget(self.position, 0, ALIGN_HCENTER)
+        cpl = QtWidgets.QHBoxLayout()
+        cpl.addWidget(self.coupling)
+        cpl.addWidget(self.invert)
+        box.addLayout(cpl)
 
-        for w, sig in ((self.enable, "toggled"), (self.vdiv, "currentIndexChanged"),
+        for w, sig in ((self.enable, "toggled"), (self.vdiv, "valueChanged"),
                        (self.position, "valueChanged"),
                        (self.coupling, "currentIndexChanged"),
                        (self.invert, "toggled")):
@@ -97,7 +72,7 @@ class ChannelStrip(QtWidgets.QGroupBox):
 
     @property
     def scale(self) -> float:
-        return float(self.vdiv.currentData())
+        return float(self.vdiv.value())
 
     @property
     def on(self) -> bool:
@@ -214,7 +189,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         ch_scroll = QtWidgets.QScrollArea()
         ch_scroll.setWidget(self.ch_box)
         ch_scroll.setWidgetResizable(True)
-        ch_scroll.setFixedHeight(190)
+        ch_scroll.setFixedHeight(240)
 
         self.table = QtWidgets.QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels(
@@ -299,19 +274,20 @@ class ScopeWindow(QtWidgets.QMainWindow):
         g = QtWidgets.QGroupBox("Horizontal / acquisition")
         f = QtWidgets.QFormLayout(g)
 
-        self.tb_combo = QtWidgets.QComboBox()
-        for v in TIMEBASE_STEPS:
-            self.tb_combo.addItem(eng(v, "s"), v)
-        self.tb_combo.setCurrentIndex(TIMEBASE_STEPS.index(0.001))
-        self.tb_combo.currentIndexChanged.connect(self._redraw)
-        f.addRow("time/div", self.tb_combo)
-
-        self.pos_slider = QtWidgets.QSlider(HORIZONTAL)
-        self.pos_slider.setRange(0, 100)
-        self.pos_slider.setValue(50)
-        self.pos_slider.valueChanged.connect(self._pos_changed)
-        self.pos_label = QtWidgets.QLabel("trigger at 50%")
-        f.addRow(self.pos_label, self.pos_slider)
+        self.tb_knob = StepKnob(TIMEBASE_STEPS, fmt=lambda v: eng(v, "s"),
+                                title="time/div", color="#ffffff",
+                                default=1e-3)
+        self.tb_knob.valueChanged.connect(lambda *_: self._redraw())
+        self.pos_knob = RangeKnob(0.0, 100.0, 1.0, fmt=lambda v: "%d %%" % v,
+                                  title="trig pos", color="#ff8080",
+                                  default=50.0)
+        self.pos_knob.valueChanged.connect(self._pos_changed)
+        knobs = QtWidgets.QHBoxLayout()
+        knobs.addStretch(1)
+        knobs.addWidget(self.tb_knob)
+        knobs.addWidget(self.pos_knob)
+        knobs.addStretch(1)
+        f.addRow(self._wrap(knobs))
 
         row = QtWidgets.QHBoxLayout()
         self.run_btn = QtWidgets.QPushButton("Run")
@@ -336,6 +312,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     def _trigger_group(self) -> QtWidgets.QGroupBox:
         g = QtWidgets.QGroupBox("Trigger")
+        self.trg_group = g
         f = QtWidgets.QFormLayout(g)
 
         self.trg_mode = QtWidgets.QComboBox()
@@ -344,35 +321,34 @@ class ScopeWindow(QtWidgets.QMainWindow):
         f.addRow("mode", self.trg_mode)
 
         self.trg_src = QtWidgets.QComboBox()
+        self.trg_src.setToolTip("Which channel the trigger watches")
         self.trg_src.currentIndexChanged.connect(self._trigger_changed)
-        f.addRow("source", self.trg_src)
+        f.addRow("trigger on", self.trg_src)
 
         self.trg_slope = QtWidgets.QComboBox()
         self.trg_slope.addItems([trigger.RISING, trigger.FALLING, trigger.EITHER])
         self.trg_slope.currentTextChanged.connect(self._trigger_changed)
         f.addRow("slope", self.trg_slope)
 
-        self.trg_level = QtWidgets.QDoubleSpinBox()
-        self.trg_level.setRange(-1.0, 1.0)
-        self.trg_level.setDecimals(4)
-        self.trg_level.setSingleStep(0.005)
+        self.trg_level = RangeKnob(-1.0, 1.0, 0.0005,
+                                   fmt=lambda v: eng(v, "FS"), title="level",
+                                   color="#ff8080", default=0.0)
         self.trg_level.valueChanged.connect(self._trigger_changed)
-        f.addRow("level (FS)", self.trg_level)
-
-        self.trg_hyst = QtWidgets.QDoubleSpinBox()
-        self.trg_hyst.setRange(0.0, 0.5)
-        self.trg_hyst.setDecimals(4)
-        self.trg_hyst.setSingleStep(0.002)
-        self.trg_hyst.setValue(0.01)
+        self.trg_hyst = RangeKnob(0.0, 0.5, 0.0005, fmt=lambda v: eng(v, "FS"),
+                                  title="hysteresis", color="#ff8080",
+                                  default=0.01)
         self.trg_hyst.valueChanged.connect(self._trigger_changed)
-        f.addRow("hysteresis", self.trg_hyst)
-
-        self.trg_hold = QtWidgets.QDoubleSpinBox()
-        self.trg_hold.setRange(0.0, 1000.0)
-        self.trg_hold.setDecimals(2)
-        self.trg_hold.setSuffix(" ms")
+        self.trg_hold = RangeKnob(0.0, 1000.0, 0.5,
+                                  fmt=lambda v: "%.1f ms" % v,
+                                  title="hold-off", color="#ff8080",
+                                  default=0.0)
         self.trg_hold.valueChanged.connect(self._trigger_changed)
-        f.addRow("hold-off", self.trg_hold)
+        knobs = QtWidgets.QHBoxLayout()
+        knobs.addStretch(1)
+        for k in (self.trg_level, self.trg_hyst, self.trg_hold):
+            knobs.addWidget(k)
+        knobs.addStretch(1)
+        f.addRow(self._wrap(knobs))
 
         row = QtWidgets.QHBoxLayout()
         half = QtWidgets.QPushButton("Level to 50%")
@@ -393,10 +369,13 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.cur_t_on.toggled.connect(self._cursors_toggled)
         self.cur_y_on.toggled.connect(self._cursors_toggled)
         self.cur_ch = QtWidgets.QComboBox()
+        self.cur_ch.setToolTip("Which channel's gain and position the Y1/Y2 "
+                               "readout is converted with. This has nothing "
+                               "to do with the trigger.")
         self.cur_ch.currentIndexChanged.connect(self._update_cursor_readout)
         f.addRow(self.cur_t_on)
         f.addRow(self.cur_y_on)
-        f.addRow("Y ref channel", self.cur_ch)
+        f.addRow("Y1/Y2 measured in", self.cur_ch)
         return g
 
     def _build_status(self) -> None:
@@ -593,16 +572,16 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 % eng(autoset.SILENCE, "FS"), 6000)
             return
         widgets = [self.trg_mode, self.trg_src, self.trg_slope, self.trg_level,
-                   self.trg_hyst, self.tb_combo, self.pos_slider]
+                   self.trg_hyst, self.tb_knob, self.pos_knob]
         for w in widgets + self.strips:
             w.blockSignals(True)
         try:
             for cp, strip in zip(p.channels, self.strips):
                 strip.enable.setChecked(cp.active)
-                strip.vdiv.setCurrentIndex(VDIV_STEPS.index(cp.vdiv))
+                strip.vdiv.setValue(cp.vdiv)
                 strip.position.setValue(round(cp.position * 4) / 4)
-            self.tb_combo.setCurrentIndex(TIMEBASE_STEPS.index(p.timebase))
-            self.pos_slider.setValue(50)
+            self.tb_knob.setValue(p.timebase)
+            self.pos_knob.setValue(50.0)
             self.trg_mode.setCurrentText(trigger.AUTO)
             self.trg_src.setCurrentIndex(p.source)
             self.trg_slope.setCurrentText(trigger.RISING)
@@ -612,7 +591,6 @@ class ScopeWindow(QtWidgets.QMainWindow):
             for w in widgets + self.strips:
                 w.blockSignals(False)
         self.engine.cfg.position = 0.5
-        self.pos_label.setText("trigger at 50%")
         self._trigger_changed()
         self.engine.reset()
         self._redraw()
@@ -623,9 +601,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                eng(p.level, "FS"), eng(p.timebase, "s"),
                eng(p.channels[p.source].freq, "Hz")), 8000)
 
-    def _pos_changed(self, value: int) -> None:
-        self.pos_label.setText("trigger at %d%%" % value)
-        self.engine.cfg.position = value / 100.0
+    def _pos_changed(self, value: float) -> None:
+        self.engine.cfg.position = float(value) / 100.0
         self._redraw()
 
     def _trigger_changed(self, *_args) -> None:
@@ -638,6 +615,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
         cfg.holdoff = self.trg_hold.value() / 1000.0
         if cfg.mode == trigger.SINGLE:
             self.engine.armed_single = True
+        if self.strips:
+            strip = self.strips[min(cfg.source, len(self.strips) - 1)]
+            self.trg_group.setTitle("Trigger - watching CH%d" % (cfg.source + 1))
+            self.trg_group.setStyleSheet(
+                "QGroupBox::title { color: %s; font-weight: bold; }"
+                % strip.color)
         self._update_trigger_line()
 
     def _update_trigger_line(self) -> None:
@@ -685,7 +668,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         if hi <= lo:
             return
         frac = (self.trig_marker.value() - lo) / (hi - lo)
-        self.pos_slider.setValue(int(round(min(max(frac, 0.0), 1.0) * 100)))
+        self.pos_knob.setValue(round(min(max(frac, 0.0), 1.0) * 100))
 
     def _cursors_toggled(self) -> None:
         span = self._time_span()
@@ -720,7 +703,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
     # ------------------------------------------------------------ acquisition
     def _timebase(self) -> float:
-        return float(self.tb_combo.currentData())
+        return float(self.tb_knob.value())
 
     def _record_len(self, rate: int) -> int:
         n = int(round(self._timebase() * X_DIVS * rate))

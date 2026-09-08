@@ -57,8 +57,15 @@ PCM. If the driver grants different parameters than requested (common with
 
 ## Using it
 
-**Vertical** — one strip per channel under the plot: enable, V/div (1‑2‑5
-steps), position in divisions, DC/AC coupling, invert. Disabled channels are
+**Knobs** — V/div, position, time/div, trigger position, level, hysteresis and
+hold-off are rotary knobs in the channel's own colour. Drag up/down or scroll
+to turn, hold shift for fine steps on the continuous ones, double-click to
+return to the default, arrow keys when focused. Stepped knobs (V/div, time/div)
+snap to the 1‑2‑5 sequence, so a value handed to them from autoset lands on a
+real detent.
+
+**Vertical** — one strip per channel under the plot: enable, V/div, position in
+divisions, DC/AC coupling, invert. Disabled channels are
 still captured, just not drawn or measured. Amplitudes are in full-scale units:
 ±1.0 FS is the converter's clipping point, so 0.5 FS/div shows a full-scale
 signal as 4 divisions.
@@ -102,9 +109,11 @@ When `normal` or `single` finds no edge the status bar says why, e.g.
 `NO TRIG (CH1 spans -60 mFS..60 mFS - level -80 mFS is outside that range)`,
 rather than leaving an apparently frozen screen.
 
-**Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the selected
-reference channel (they follow that channel's V/div and position). Readout sits
-under the plot.
+**Cursors** — T1/T2 give Δt and 1/Δt; Y1/Y2 give Δ in the units of the channel
+named in **Y1/Y2 measured in** (they follow that channel's V/div and position).
+That picker only affects the cursor readout — the trigger's channel is the
+separate **trigger on** picker, and the Trigger panel's title names it, e.g.
+`Trigger - watching CH2`, in that channel's colour. Readout sits under the plot.
 
 **Measurements** — per enabled channel: Vpp, Vmax, Vmin, mean, RMS, frequency,
 period, duty cycle, 10‑90 % rise time. Frequency comes from hysteresis-qualified
@@ -123,6 +132,8 @@ writes the record currently on screen (time column plus one column per channel).
 | `pyscope/trigger.py` | edge search, hold-off, record extraction |
 | `pyscope/measure.py` | automatic measurements, engineering formatting |
 | `pyscope/autoset.py` | picks gain, position, timebase and trigger from data |
+| `pyscope/knobs.py` | rotary knob widgets |
+| `pyscope/qtcompat.py` | enum and event access across the four Qt bindings |
 | `pyscope/ui.py` | Qt/pyqtgraph front end |
 
 Capture runs in its own thread and only ever appends to the ring buffer; the UI

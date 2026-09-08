@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from pyqtgraph.Qt import QtCore, QtWidgets  # noqa: E402
 
+from pyscope.autoset import VDIV_STEPS  # noqa: E402
 from pyscope.sources import SourceConfig  # noqa: E402
 from pyscope.ui import ScopeWindow  # noqa: E402
 
@@ -27,7 +28,7 @@ def main() -> int:
 
     win.trg_mode.setCurrentText("normal")
     win.trg_level.setValue(0.0)
-    win.tb_combo.setCurrentIndex(win.tb_combo.findText("500 us"))
+    win.tb_knob.setValue(500e-6)
     win.cur_t_on.setChecked(True)
     win.cur_y_on.setChecked(True)
 
@@ -60,11 +61,11 @@ def main() -> int:
     lo, hi = win._time_span()
     win.trig_marker.setPos(lo + 0.2 * (hi - lo))
     win._trig_marker_moved()
-    assert win.pos_slider.value() == 20, "trigger point drag ignored"
+    assert win.pos_knob.value() == 20, "trigger point drag ignored"
     assert win.engine.cfg.position == 0.5 - 0.3
 
     # --- autoset: it should find the simulated signals on its own ----------
-    win.tb_combo.setCurrentIndex(0)                         # 1 us/div, far off
+    win.tb_knob.setIndex(0)                                # 1 us/div, far off
     win.trg_level.setValue(0.9)                             # level off the signal
     for st in win.strips:
         st.enable.setChecked(False)
@@ -80,8 +81,8 @@ def main() -> int:
     cycles = win._timebase() * 10 * 1000.0        # screen widths of 1 kHz
     assert 1.5 <= cycles <= 5.0, (
         "expected a few cycles on screen, got %.1f at %s/div"
-        % (cycles, win.tb_combo.currentText()))
-    assert win.pos_slider.value() == 50
+        % (cycles, win.tb_knob.text()))
+    assert win.pos_knob.value() == 50
     print("autoset:", win.status.currentMessage())
 
     deadline = time.time() + 2.0
@@ -122,6 +123,48 @@ def main() -> int:
     win.trg_mode.setCurrentText("auto")
     win.level_to_50()
     deadline = time.time() + 2.0
+    while time.time() < deadline and not (win.frame and win.frame.triggered):
+        app.processEvents()
+        time.sleep(0.01)
+
+    # --- knobs: wheel, drag, snapping and reset ---------------------------
+    from pyqtgraph.Qt import QtGui
+    from pyscope.knobs import RangeKnob, StepKnob
+
+    k = win.strips[0].vdiv
+    assert isinstance(k, StepKnob)
+    start = k.value()
+    k._nudge(1)                                     # one wheel click up
+    assert k.value() > start and k.value() in VDIV_STEPS, "step knob off grid"
+    k._nudge(-1)
+    assert k.value() == start
+    k.setValue(0.037)                               # arbitrary value snaps
+    assert k.value() in VDIV_STEPS
+
+    lvl = win.trg_level
+    assert isinstance(lvl, RangeKnob)
+    seen = []
+    lvl.valueChanged.connect(seen.append)
+    lvl.setValue(0.25)
+    assert seen and abs(lvl.value() - 0.25) < 1e-9, "range knob did not emit"
+    lvl.setValue(99.0)
+    assert lvl.value() == 1.0, "range knob must clamp"
+    lvl.reset()
+    assert lvl.value() == 0.0, "double-click reset should return the default"
+
+    # A knob must render without a live paint device backing it.
+    pix = QtGui.QPixmap(k.size())
+    k.render(pix)
+
+    assert "CH1" in win.trg_group.title(), win.trg_group.title()
+    win.trg_src.setCurrentIndex(1)
+    assert "CH2" in win.trg_group.title(), win.trg_group.title()
+    win.trg_src.setCurrentIndex(0)
+    print("trigger group titled:", win.trg_group.title())
+
+    # Leave the screen in a representative state for the screenshot.
+    win.autoset()
+    deadline = time.time() + 3.0
     while time.time() < deadline and not (win.frame and win.frame.triggered):
         app.processEvents()
         time.sleep(0.01)
