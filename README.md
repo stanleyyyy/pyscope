@@ -11,44 +11,92 @@ sound card, so the UI can be developed and tested anywhere.
 
 ## Install
 
-On Debian/Ubuntu-based distributions the system Python is PEP 668 managed, so
-`pip install` into it will refuse. Use the distro packages:
+pyscope is a normal Python package with a `pyscope` command. The recommended
+way to install a Python application system-wide is [pipx](https://pipx.pypa.io),
+which puts it in its own isolated environment and links the command onto your
+`PATH` — it works the same on any Linux distribution, macOS and Windows, and
+never touches the interpreter your operating system depends on.
 
 ```bash
-sudo apt install -y python3-numpy python3-pyqtgraph python3-pyqt5 python3-alsaaudio
+pipx install git+https://github.com/stanleyyyy/pyscope
 ```
 
-Or, for current upstream versions, a virtualenv:
+or from a clone:
 
 ```bash
-sudo apt install -y python3-venv python3-dev build-essential libasound2-dev libxcb-cursor0
-python3 -m venv .venv && .venv/bin/pip install numpy pyqtgraph PySide6 pyalsaaudio
+pipx install .
 ```
 
-`pyalsaaudio` compiles against `libasound2-dev`; `libxcb-cursor0` is the Qt6
-runtime dependency PySide6 needs on Ubuntu 24.04 and later. Any of PyQt5,
-PyQt6, PySide2 or PySide6 works — pyqtgraph picks up whichever is installed,
-and the UI handles both the Qt5 and Qt6 enum conventions. Check which one was
-picked with `python3 -c "from pyqtgraph.Qt import QT_LIB; print(QT_LIB)"`.
+Then, from anywhere:
 
-Run from the repository root — `python -m pyscope` needs the package on the
-path. There is nothing to build or install.
+```bash
+pyscope --list-devices
+```
+
+Upgrade later with `pipx upgrade pyscope`, remove with `pipx uninstall pyscope`.
+[uv](https://docs.astral.sh/uv/) users can do the same with `uv tool install .`.
+
+### Prerequisites
+
+Two things must come from your operating system's package manager, because
+they are not Python:
+
+- **ALSA headers and a C compiler** (Linux only) — the `pyalsaaudio` binding is
+  compiled during installation. The header package is `libasound2-dev` on
+  Debian/Ubuntu, `alsa-lib-devel` on Fedora/RHEL, and `alsa-lib` on Arch
+  (headers included). Any distro's `python3-dev`-equivalent and a compiler
+  (`gcc`) are needed alongside it.
+- **Qt's platform libraries** — the PySide6 wheel bundles Qt itself, but needs
+  the usual X11/Wayland client libraries. Most desktops already have them; the
+  one commonly missing is `libxcb-cursor0` (Ubuntu 24.04 and later). If the
+  window never appears and the terminal mentions a "platform plugin", that is
+  the missing piece.
+
+Without a sound card or the ALSA binding — on macOS or Windows, say —
+`pyscope --simulate` still runs the whole application on the built-in signal
+generator.
+
+Do not `pip install` straight into the system interpreter: most current
+distributions mark it as externally managed and refuse, and those that do not
+will still let you break tools the OS depends on. pipx, uv or a virtualenv are
+the right tools for that job.
+
+### Alternatives
+
+A virtualenv works everywhere pipx does and is what you want for development:
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate && pip install -e .[dev]
+```
+
+`-e` makes it an editable install, so code changes take effect without
+reinstalling; `[dev]` pulls in pytest.
+
+If you would rather have every dependency come from your distribution, install
+its packages for numpy, pyqtgraph, a Qt binding and pyalsaaudio (on Debian and
+Ubuntu: `python3-numpy python3-pyqtgraph python3-pyqt5 python3-alsaaudio`) and
+run `python3 -m pyscope` from a clone — nothing needs building in that case.
+Any of PyQt5, PyQt6, PySide2 or PySide6 works: pyqtgraph picks up whichever is
+installed, and the UI handles both the Qt5 and Qt6 enum conventions. Check
+which one was picked with
+`python3 -c "from pyqtgraph.Qt import QT_LIB; print(QT_LIB)"`.
 
 ## Run
 
 ```bash
-python -m pyscope --list-devices
+pyscope --list-devices
 ```
 
 ```bash
-python -m pyscope -d hw:1,0 -r 96000 -c 4 -f S32_LE -p 512
+pyscope -d hw:1,0 -r 96000 -c 4 -f S32_LE -p 512
 ```
 
 ```bash
-python -m pyscope --simulate
+pyscope --simulate
 ```
 
-Capture starts as soon as the window opens.
+`python -m pyscope` is equivalent from a clone. Capture starts as soon as the
+window opens.
 
 Options: `-d/--device`, `-r/--rate`, `-c/--channels`, `-f/--format`
 (`S16_LE`, `S24_3LE`, `S32_LE`, `FLOAT_LE`), `-p/--period`, `-b/--buffer`
@@ -75,7 +123,7 @@ Precedence at startup is **built-in defaults → stored session (or `--preset`)
 → command line**, so
 
 ```bash
-python -m pyscope -d hw:2,0 -c 4 -r 96000 -f S32_LE
+pyscope -d hw:2,0 -c 4 -r 96000 -f S32_LE
 ```
 
 uses those four values and keeps your saved timebase, trigger and cursors.
@@ -191,7 +239,7 @@ never block each other, so a slow repaint costs frames but never samples.
 ## Tests
 
 ```bash
-python -m pytest -q
+pip install -e .[dev] && python -m pytest -q
 ```
 
 71 headless tests cover the ring buffer (wrap-around, oversized writes, global

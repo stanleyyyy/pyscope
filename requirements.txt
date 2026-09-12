@@ -1,4 +1,0 @@
-numpy>=1.21
-pyqtgraph>=0.13
-PySide6>=6.4
-pyalsaaudio>=0.9 ; sys_platform == "linux"

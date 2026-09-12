@@ -5,3 +5,6 @@ __pycache__/
 smoke.png
 capture.csv
 tests/_smoke_config/
+*.egg-info/
+build/
+dist/
