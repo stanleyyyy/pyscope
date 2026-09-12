@@ -6,7 +6,9 @@ from pyscope import autoset, settings
 from pyscope.__main__ import parse_args, resolve_state
 from pyscope.measure import eng, measure, parse_eng
 from pyscope.ring import RingBuffer
-from pyscope.sources import SimSource, SourceConfig, decode
+from pyscope import sources
+from pyscope.sources import (PortAudioSource, SimSource, SourceConfig,
+                             choose_backend, decode, looks_like_alsa)
 from pyscope.trigger import (EITHER, FALLING, NORMAL, RISING, SINGLE,
                              TriggerConfig, TriggerEngine, find_edge,
                              refine_edge)
@@ -466,3 +468,135 @@ def test_preset_is_preferred_over_the_last_session(store):
 def test_defaults_apply_with_no_store_and_no_arguments(store):
     state = resolve_state(parse_args([]))
     assert state["input"] == settings.default_state()["input"]
+
+
+# ------------------------------------------------------------------ backends
+@pytest.mark.parametrize("name,alsa", [
+    ("hw:2,0", True), ("plughw:0,0", True), ("default", True),
+    ("sysdefault:CARD=US4x4HR", True), ("pipewire", True), ("front:CARD=X", True),
+    ("3: Line In (Realtek)", False), ("US-4x4HR: USB Audio (hw:2,0)", False),
+    ("Microphone", False), ("", False),
+])
+def test_alsa_names_are_recognised(name, alsa):
+    assert looks_like_alsa(name) is alsa
+
+
+def test_auto_backend_prefers_alsa_only_for_alsa_names():
+    assert choose_backend("auto", "hw:2,0", True, True) == "alsa"
+    assert choose_backend("auto", "3: Line In", True, True) == "portaudio"
+    assert choose_backend("auto", "hw:2,0", False, True) == "portaudio"
+    assert choose_backend("auto", "default", False, True) == "portaudio"
+    assert choose_backend("auto", "3: Line In", True, False) == "alsa"
+    assert choose_backend("alsa", "3: Line In", True, True) == "alsa"
+    assert choose_backend("sim", "hw:2,0", True, True) == "sim"
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("3", 3), ("3: Line In (2- Realtek USB Audio)", 3), ("default", None),
+    ("", None), ("  ", None), ("Realtek", "Realtek"), ("hw:2,0", "hw:2,0"),
+])
+def test_portaudio_device_resolution(text, expected):
+    assert PortAudioSource.resolve_device(text) == expected
+
+
+class _FakeStream:
+    """Stands in for sounddevice.InputStream: delivers blocks on start()."""
+    instances = []
+
+    def __init__(self, device, channels, samplerate, dtype, blocksize, callback):
+        self.args = dict(device=device, channels=channels, samplerate=samplerate,
+                         dtype=dtype, blocksize=blocksize)
+        self.callback = callback
+        self.samplerate = float(samplerate)
+        self.active = False
+        self.closed = False
+        _FakeStream.instances.append(self)
+
+    def start(self):
+        self.active = True
+        block = np.full((self.args["blocksize"], self.args["channels"]), 0.25,
+                        dtype=np.float32)
+        for _ in range(3):
+            self.callback(block, len(block), None, None)
+
+    def stop(self):
+        self.active = False
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeSounddevice:
+    def __init__(self, reject=False):
+        self.reject = reject
+        self.InputStream = _FakeStream
+
+    def check_input_settings(self, device, channels, samplerate, dtype):
+        if self.reject:
+            raise ValueError("Invalid sample rate")
+
+    def query_devices(self):
+        return [{"name": "Mic", "max_input_channels": 2},
+                {"name": "Speakers", "max_input_channels": 0}]
+
+
+def test_portaudio_source_fills_the_ring_from_the_callback(monkeypatch):
+    monkeypatch.setattr(sources, "sounddevice", _FakeSounddevice())
+    _FakeStream.instances.clear()
+    cfg = SourceConfig(device="0: Mic", rate=48000, channels=2, period=256)
+    src = PortAudioSource(cfg)
+    src.start()
+    try:
+        stream = _FakeStream.instances[-1]
+        assert stream.args["device"] == 0 and stream.args["dtype"] == "float32"
+        assert src.blocks == 3 and src.overruns == 0
+        data, _ = src.ring.snapshot()
+        assert data.shape == (768, 2)
+        assert np.all(data == 0.25)
+        assert src.running
+    finally:
+        src.stop()
+    assert not src.running and stream.closed
+
+
+def test_portaudio_source_reports_unusable_settings(monkeypatch):
+    monkeypatch.setattr(sources, "sounddevice", _FakeSounddevice(reject=True))
+    src = PortAudioSource(SourceConfig(device="Mic", rate=12345, channels=2))
+    with pytest.raises(sources.SourceError, match="12345 Hz"):
+        src.start()
+
+
+def test_portaudio_source_without_the_module(monkeypatch):
+    monkeypatch.setattr(sources, "sounddevice", None)
+    with pytest.raises(sources.SourceError, match="sounddevice"):
+        PortAudioSource(SourceConfig()).start()
+
+
+def test_device_listing_merges_backends(monkeypatch):
+    monkeypatch.setattr(sources, "sounddevice", _FakeSounddevice())
+    monkeypatch.setattr(sources, "list_alsa_devices", lambda: ["hw:0,0"])
+    assert sources.list_devices() == [("alsa", "hw:0,0"), ("portaudio", "0: Mic")]
+
+
+def test_make_source_honours_the_backend(monkeypatch):
+    monkeypatch.setattr(sources, "sounddevice", _FakeSounddevice())
+    monkeypatch.setattr(sources, "alsaaudio", object())
+    assert isinstance(sources.make_source(SourceConfig(simulate=True)), SimSource)
+    assert isinstance(sources.make_source(SourceConfig(backend="sim")), SimSource)
+    assert isinstance(sources.make_source(SourceConfig(device="hw:1,0")),
+                      sources.AlsaSource)
+    assert isinstance(sources.make_source(SourceConfig(device="2: Mic")),
+                      PortAudioSource)
+    assert isinstance(sources.make_source(SourceConfig(device="hw:1,0",
+                                                       backend="portaudio")),
+                      PortAudioSource)
+
+
+def test_backend_survives_the_settings_round_trip(store):
+    st = settings.default_state()
+    st["input"]["backend"] = "portaudio"
+    settings.save_last(st)
+    assert resolve_state(parse_args([]))["input"]["backend"] == "portaudio"
+    assert resolve_state(parse_args(["--simulate"]))["input"]["backend"] == "sim"
+    assert resolve_state(parse_args(["--backend", "alsa"]))["input"]["backend"] == "alsa"
+    assert settings.normalise({"input": {"backend": "bogus"}})["input"]["backend"] == "auto"

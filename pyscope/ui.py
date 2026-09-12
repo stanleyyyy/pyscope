@@ -15,9 +15,10 @@ from .measure import eng, measure
 from . import settings
 from .qtcompat import (ALIGN_HCENTER, DASH_LINE, DASH_DOT_LINE, DOT_LINE,
                        HORIZONTAL, KEY_A, KEY_F, KEY_S, KEY_SPACE, NO_EDIT,
-                       NO_FRAME, SCROLLBAR_OFF, STRETCH, WINDOW,
-                       readable)
-from .sources import COMMON_RATES, FORMATS, SourceConfig, SourceError, make_source
+                       NO_FRAME, SCROLLBAR_OFF, STRETCH, TOOLTIP_ROLE,
+                       WINDOW, readable)
+from .sources import (BACKENDS, COMMON_RATES, FORMATS, SourceConfig,
+                      SourceError, choose_backend, make_source)
 from .trigger import TriggerConfig, TriggerEngine
 
 AUTOSET_WINDOW = 0.25   # seconds of data autoset inspects
@@ -299,6 +300,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.fmt_combo = QtWidgets.QComboBox()
         self.fmt_combo.addItems(list(FORMATS))
         self.fmt_combo.setCurrentText(self.cfg.fmt)
+        self.fmt_combo.setToolTip("Hardware sample format, ALSA backend only; "
+                                  "PortAudio always delivers float32.")
         f.addRow("format", self.fmt_combo)
 
         self.period_combo = QtWidgets.QComboBox()
@@ -313,9 +316,17 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.buf_spin.setSuffix(" s")
         f.addRow("ring buffer", self.buf_spin)
 
-        self.sim_check = QtWidgets.QCheckBox("simulator (no hardware)")
-        self.sim_check.setChecked(self.cfg.simulate)
-        f.addRow(self.sim_check)
+        self.backend_combo = QtWidgets.QComboBox()
+        self.backend_combo.addItems(list(BACKENDS))
+        self.backend_combo.setToolTip(
+            "auto: ALSA names (hw:, plughw:, default) go to ALSA when it is "
+            "installed, anything else to PortAudio. PortAudio covers Windows, "
+            "macOS and Linux; sim is the built-in signal generator.")
+        self.backend_combo.setCurrentText("sim" if self.cfg.simulate
+                                          else self.cfg.backend)
+        self.backend_combo.currentTextChanged.connect(self._update_backend_ui)
+        self.dev_combo.currentTextChanged.connect(self._update_backend_ui)
+        f.addRow("backend", self.backend_combo)
 
         apply_btn = QtWidgets.QPushButton("Apply / restart capture")
         apply_btn.clicked.connect(lambda: self._apply_config(start=True))
@@ -449,17 +460,37 @@ class ScopeWindow(QtWidgets.QMainWindow):
         # Keep whatever is selected - on the first scan that is the device the
         # command line asked for, which must survive the list being filled in.
         current = self.dev_combo.currentText() or self.cfg.device
+        self.dev_combo.blockSignals(True)
         self.dev_combo.clear()
-        devs = sources.list_alsa_devices()
+        devs = sources.list_devices()
         if not devs:
-            devs = ["default"]
-        self.dev_combo.addItems(devs)
+            devs = [("auto", "default")]
+        for backend, name in devs:
+            self.dev_combo.addItem(name, backend)
+            self.dev_combo.setItemData(self.dev_combo.count() - 1,
+                                       "%s backend" % backend, TOOLTIP_ROLE)
         if current:
             self.dev_combo.setCurrentText(current)
-        if sources.alsaaudio is None:
-            self.sim_check.setChecked(True)
+        self.dev_combo.blockSignals(False)
+        if sources.alsaaudio is None and sources.sounddevice is None:
+            self.backend_combo.setCurrentText("sim")
             self.status.showMessage(
-                "pyalsaaudio not available - using the simulator", 8000)
+                "no audio backend installed (sounddevice or pyalsaaudio) - "
+                "using the simulator", 8000)
+        self._update_backend_ui()
+
+    def effective_backend(self) -> str:
+        """What "auto" resolves to for the device currently named."""
+        chosen = self.backend_combo.currentText()
+        return choose_backend(chosen, self.dev_combo.currentText().strip())
+
+    def _update_backend_ui(self, *_args) -> None:
+        backend = self.effective_backend()
+        alsa = backend == "alsa"
+        self.fmt_combo.setEnabled(alsa)
+        self.backend_combo.setToolTip(
+            "Resolves to: %s" % backend if self.backend_combo.currentText() == "auto"
+            else self.backend_combo.toolTip())
 
     def _collect_config(self) -> SourceConfig:
         try:
@@ -473,7 +504,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
             fmt=self.fmt_combo.currentText(),
             period=int(self.period_combo.currentData() or 1024),
             buffer_seconds=self.buf_spin.value(),
-            simulate=self.sim_check.isChecked(),
+            simulate=self.backend_combo.currentText() == "sim",
+            backend=self.backend_combo.currentText(),
             sim_specs=list(self.cfg.sim_specs),
         )
 
@@ -869,9 +901,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
             trg = "auto"
         self.status_label.setText(
             "%s | %d Hz | %d ch | %s | blocks %d | overruns %d | %s"
-            % ("SIM" if self.cfg.simulate else self.cfg.device, self.cfg.rate,
-               self.cfg.channels, self.cfg.fmt, src.blocks, src.overruns,
-               trg if self.running else "STOPPED"))
+            % (src.label, self.cfg.rate, self.cfg.channels,
+               self.cfg.fmt if src.label.startswith("alsa") else "float32",
+               src.blocks, src.overruns, trg if self.running else "STOPPED"))
 
     # ----------------------------------------------------------------- draw
     def _redraw(self) -> None:
@@ -953,7 +985,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
                 "fmt": self.fmt_combo.currentText(),
                 "period": int(self.period_combo.currentData() or 1024),
                 "buffer_seconds": float(self.buf_spin.value()),
-                "simulate": self.sim_check.isChecked(),
+                "simulate": self.backend_combo.currentText() == "sim",
+                "backend": self.backend_combo.currentText(),
             },
             "channels": [{
                 "on": st.on,
@@ -983,7 +1016,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.fmt_combo.setCurrentText(inp["fmt"])
         self.period_combo.setCurrentText(str(inp["period"]))
         self.buf_spin.setValue(float(inp["buffer_seconds"]))
-        self.sim_check.setChecked(bool(inp["simulate"]))
+        self.backend_combo.setCurrentText("sim" if inp["simulate"]
+                                          else inp["backend"])
         if restart:
             self._apply_config(start=True)      # rebuilds the channel strips
         else:

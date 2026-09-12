@@ -1,8 +1,9 @@
-# pyscope — a configurable ALSA oscilloscope
+# pyscope — a configurable audio-input oscilloscope
 
-A soft-scope for Linux audio inputs. Everything about the capture is
-configurable (device, rate, channel count, sample format, period size, ring
-depth), and the display behaves like a bench scope: 10 × 8 divisions,
+A soft-scope for sound-card inputs on Linux, Windows and macOS. Everything
+about the capture is configurable (backend, device, rate, channel count,
+sample format, block size, ring depth), and the display behaves like a bench
+scope: 10 × 8 divisions,
 per-channel gain/position/coupling, auto/normal/single edge triggering with
 hysteresis and hold-off, draggable cursors, and automatic measurements.
 
@@ -38,23 +39,36 @@ Upgrade later with `pipx upgrade pyscope`, remove with `pipx uninstall pyscope`.
 
 ### Prerequisites
 
-Two things must come from your operating system's package manager, because
-they are not Python:
+Nothing is compiled during installation: every dependency ships as a binary
+wheel. Two things still come from the operating system:
 
-- **ALSA headers and a C compiler** (Linux only) — the `pyalsaaudio` binding is
-  compiled during installation. The header package is `libasound2-dev` on
-  Debian/Ubuntu, `alsa-lib-devel` on Fedora/RHEL, and `alsa-lib` on Arch
-  (headers included). Any distro's `python3-dev`-equivalent and a compiler
-  (`gcc`) are needed alongside it.
+- **PortAudio** (Linux only) — the `sounddevice` wheel bundles PortAudio on
+  Windows and macOS but not on Linux, where it is a small runtime library:
+  `libportaudio2` on Debian/Ubuntu, `portaudio` on Fedora/Arch. No headers, no
+  compiler.
 - **Qt's platform libraries** — the PySide6 wheel bundles Qt itself, but needs
   the usual X11/Wayland client libraries. Most desktops already have them; the
   one commonly missing is `libxcb-cursor0` (Ubuntu 24.04 and later). If the
   window never appears and the terminal mentions a "platform plugin", that is
   the missing piece.
 
-Without a sound card or the ALSA binding — on macOS or Windows, say —
-`pyscope --simulate` still runs the whole application on the built-in signal
-generator.
+Without any input device — a headless box, or WSL, which has no sound
+hardware — `pyscope --simulate` still runs the whole application on the
+built-in signal generator.
+
+**Direct ALSA access** is an optional extra for Linux, for when you want the
+hardware sample format (`S24_3LE`, `S32_LE`) or a raw `hw:` device without
+PortAudio in between. It compiles a small C binding against the ALSA headers,
+so it needs `libasound2-dev` (Debian/Ubuntu), `alsa-lib-devel` (Fedora/RHEL)
+or `alsa-lib` (Arch), plus `python3-dev` and a compiler:
+
+```bash
+pipx install 'git+https://github.com/stanleyyyy/pyscope#egg=pyscope[alsa]'
+```
+
+or `pipx install '.[alsa]'` from a clone. Without it, ALSA devices are still
+reachable through PortAudio's ALSA host — they appear in the device list under
+their card name.
 
 Do not `pip install` straight into the system interpreter: most current
 distributions mark it as externally managed and refuse, and those that do not
@@ -73,9 +87,10 @@ python3 -m venv .venv && . .venv/bin/activate && pip install -e .[dev]
 reinstalling; `[dev]` pulls in pytest.
 
 If you would rather have every dependency come from your distribution, install
-its packages for numpy, pyqtgraph, a Qt binding and pyalsaaudio (on Debian and
-Ubuntu: `python3-numpy python3-pyqtgraph python3-pyqt5 python3-alsaaudio`) and
-run `python3 -m pyscope` from a clone — nothing needs building in that case.
+its packages for numpy, pyqtgraph, a Qt binding and sounddevice or pyalsaaudio
+(on Debian and Ubuntu: `python3-numpy python3-pyqtgraph python3-pyqt5
+python3-sounddevice python3-alsaaudio`) and run `python3 -m pyscope` from a
+clone — nothing needs building in that case.
 Any of PyQt5, PyQt6, PySide2 or PySide6 works: pyqtgraph picks up whichever is
 installed, and the UI handles both the Qt5 and Qt6 enum conventions. Check
 which one was picked with
@@ -99,12 +114,36 @@ pyscope --simulate
 window opens.
 
 Options: `-d/--device`, `-r/--rate`, `-c/--channels`, `-f/--format`
-(`S16_LE`, `S24_3LE`, `S32_LE`, `FLOAT_LE`), `-p/--period`, `-b/--buffer`
-(ring depth in seconds), `--simulate`, `--preset NAME`, `--no-restore`,
-`-l/--list-devices`, `--list-presets`. Everything is also editable live in the
+(`S16_LE`, `S24_3LE`, `S32_LE`, `FLOAT_LE`; ALSA backend only), `-p/--period`
+(block size in frames), `-b/--buffer` (ring depth in seconds), `--backend`
+(`auto`, `alsa`, `portaudio`, `sim`), `--simulate`, `--preset NAME`,
+`--no-restore`, `-l/--list-devices`, `--list-presets`. Everything is also editable live in the
 **Input** panel; **Apply / restart capture** reopens the PCM. If the driver
 grants different parameters than requested (common with `plughw:`), the panel
 is updated to what was actually granted.
+
+## Backends
+
+`--list-devices` prints every input the installed backends can see, prefixed
+with the backend that owns it:
+
+```
+alsa       hw:2,0
+alsa       plughw:2,0
+portaudio  3: Line In (2- Realtek USB Audio)
+```
+
+- **portaudio** — `sounddevice` over PortAudio: WASAPI/DirectSound on Windows,
+  CoreAudio on macOS, ALSA or PulseAudio on Linux. Devices are addressed by
+  index (`-d 3`), by the listing's `3: Line In` form, by a name substring
+  (`-d "Line In"`), or `default`. Samples arrive as float32, so the format
+  setting does not apply and is greyed out.
+- **alsa** — direct ALSA via `pyalsaaudio` (the `[alsa]` extra, Linux only).
+  Addressed by PCM name: `hw:2,0`, `plughw:2,0`, `default`, `sysdefault:CARD=…`.
+  Gives you the hardware sample format and the raw stream with no resampling.
+- **sim** — the built-in generator; `--simulate` is shorthand.
+- **auto** (the default) sends ALSA-style names to ALSA when it is installed
+  and everything else to PortAudio, so `-d hw:2,0` and `-d 3` both just work.
 
 ## Settings and presets
 
@@ -223,7 +262,7 @@ writes the record currently on screen (time column plus one column per channel).
 | file | role |
 | --- | --- |
 | `pyscope/ring.py` | lock-protected ring buffer with a global sample counter |
-| `pyscope/sources.py` | ALSA capture thread, PCM decoding, signal simulator |
+| `pyscope/sources.py` | ALSA and PortAudio capture, PCM decoding, signal simulator |
 | `pyscope/trigger.py` | edge search, hold-off, record extraction |
 | `pyscope/measure.py` | automatic measurements, engineering formatting |
 | `pyscope/settings.py` | the settings schema, presets and their JSON store |
@@ -242,18 +281,21 @@ never block each other, so a slow repaint costs frames but never samples.
 pip install -e .[dev] && python -m pytest -q
 ```
 
-71 headless tests cover the ring buffer (wrap-around, oversized writes, global
+95 headless tests cover the ring buffer (wrap-around, oversized writes, global
 indices), PCM decoding for all four formats, the trigger engine (slopes,
 hysteresis, arming, hold-off, auto/normal/single, pre-trigger placement), the
 measurements, the engineering-notation parser behind the knob fields, the
 autoset planner (gain fitting, offset handling, stacking within the graticule,
-silence detection), and the settings layer (preset round-trips, corrupt files,
-partial states, command-line precedence).
+silence detection), the settings layer (preset round-trips, corrupt files,
+partial states, command-line precedence), and the backends (ALSA-name
+detection, auto selection, PortAudio device resolution and a stubbed
+PortAudio stream feeding the ring).
 
 The UI has its own offscreen smoke test — it builds the window, runs the
 simulator, drags both trigger handles, runs autoset and checks it finds the
-signal, types into the knob fields, and round-trips a preset through the real
-widgets, then saves a screenshot:
+signal, types into the knob fields, round-trips a preset through the real widgets,
+and — when the host has an input device — captures live audio through
+PortAudio, then saves a screenshot:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python tests/smoke_ui.py smoke.png
@@ -268,5 +310,9 @@ QT_QPA_PLATFORM=offscreen python tests/smoke_ui.py smoke.png
   are attenuated, so square waves will droop. That is the hardware, not the app.
 - Overruns are counted in the status bar. If they climb, raise the period size
   or lower the rate.
-- `hw:` devices give you the raw hardware format; `plughw:`/`default` let ALSA
-  convert, which is more forgiving but may resample.
+- With the ALSA backend, `hw:` devices give you the raw hardware format;
+  `plughw:`/`default` let ALSA convert, which is more forgiving but may
+  resample. PortAudio always converts to float32 and may resample too.
+- On Windows, WASAPI shared mode resamples to the mixer rate; if the rate you
+  ask for is refused, use the one Windows shows for the device in Sound
+  settings, or a different host API's copy of the same device in the list.

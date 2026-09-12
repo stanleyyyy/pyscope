@@ -53,6 +53,7 @@ STRETCH = qt_enum(QtWidgets.QHeaderView, "ResizeMode", "Stretch")
 SCROLLBAR_OFF = qt_enum(QtCore.Qt, "ScrollBarPolicy",
                         "ScrollBarAlwaysOff")
 NO_FRAME = qt_enum(QtWidgets.QFrame, "Shape", "NoFrame")
+TOOLTIP_ROLE = qt_enum(QtCore.Qt, "ItemDataRole", "ToolTipRole")
 
 
 def event_pos(event) -> tuple[float, float]:

@@ -51,6 +51,7 @@ def default_state(channels: int | None = None) -> dict:
             "period": cfg.period,
             "buffer_seconds": cfg.buffer_seconds,
             "simulate": cfg.simulate,
+            "backend": cfg.backend,
         },
         "channels": [default_channel(i) for i in range(n)],
         "horizontal": {"timebase": 1e-3, "position": 50.0},
@@ -102,6 +103,8 @@ def normalise(state: dict | None) -> dict:
     if inp.get("fmt") not in ("S16_LE", "S24_3LE", "S32_LE", "FLOAT_LE"):
         inp["fmt"] = defaults["fmt"]
     inp["simulate"] = bool(inp.get("simulate"))
+    if inp.get("backend") not in ("auto", "alsa", "portaudio", "sim"):
+        inp["backend"] = defaults["backend"]
 
     # A stored channel list may be shorter or longer than the channel count.
     chans = out.get("channels")
@@ -180,4 +183,5 @@ def state_to_config(state: dict) -> SourceConfig:
                         channels=int(inp["channels"]), fmt=inp["fmt"],
                         period=int(inp["period"]),
                         buffer_seconds=float(inp["buffer_seconds"]),
-                        simulate=bool(inp["simulate"]))
+                        simulate=bool(inp["simulate"]),
+                        backend=inp["backend"])

@@ -5,24 +5,29 @@ import argparse
 import sys
 
 from . import settings
-from .sources import FORMATS, list_alsa_devices
+from .sources import BACKENDS, FORMATS, list_devices
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="pyscope",
-                                description="Configurable ALSA oscilloscope")
+                                description="Configurable audio-input oscilloscope")
     # Defaults are None so an unset option can fall through to the stored
     # session; the built-in defaults live in settings.default_state().
-    p.add_argument("-d", "--device", help="ALSA capture PCM")
+    p.add_argument("-d", "--device",
+               help="capture device: an ALSA PCM name (hw:2,0), a PortAudio "
+                    "index or name substring, or default")
     p.add_argument("-r", "--rate", type=int, help="sample rate (Hz)")
     p.add_argument("-c", "--channels", type=int, help="channel count")
     p.add_argument("-f", "--format", dest="fmt", choices=FORMATS)
     p.add_argument("-p", "--period", type=int,
-                   help="ALSA period size in frames")
+                   help="block size in frames")
     p.add_argument("-b", "--buffer", type=float,
                    help="ring buffer depth in seconds")
+    p.add_argument("--backend", choices=BACKENDS,
+                   help="auto picks ALSA for ALSA names when available, else "
+                        "PortAudio (Windows, macOS, Linux)")
     p.add_argument("--simulate", action="store_true", default=None,
-                   help="use the built-in generator instead of a sound card")
+                   help="use the built-in generator (same as --backend sim)")
     p.add_argument("--preset", help="start from a saved preset")
     p.add_argument("--no-restore", action="store_true",
                    help="ignore the stored session and preset")
@@ -45,7 +50,8 @@ def resolve_state(args: argparse.Namespace) -> dict:
     overrides = {"device": args.device, "rate": args.rate,
                  "channels": args.channels, "fmt": args.fmt,
                  "period": args.period, "buffer_seconds": args.buffer,
-                 "simulate": args.simulate}
+                 "simulate": args.simulate,
+                 "backend": "sim" if args.simulate else args.backend}
     state = settings.merge(state, {"input": overrides})
     if args.channels is not None:
         # A different channel count invalidates the stored per-channel list.
@@ -56,11 +62,14 @@ def resolve_state(args: argparse.Namespace) -> dict:
 def main(argv=None) -> int:
     args = parse_args(argv)
     if args.list_devices:
-        devs = list_alsa_devices()
+        devs = list_devices()
         if not devs:
-            print("no ALSA capture devices found (is pyalsaaudio installed?)")
+            print("no capture devices found (is sounddevice or pyalsaaudio "
+                  "installed?)")
             return 1
-        print("\n".join(devs))
+        width = max(len(b) for b, _ in devs)
+        for backend, name in devs:
+            print("%-*s  %s" % (width, backend, name))
         return 0
     if args.list_presets:
         names = sorted(settings.load_store()["presets"])

@@ -1,6 +1,8 @@
-"""Capture sources: real ALSA PCM devices and a hardware-free simulator."""
+"""Capture sources: ALSA directly, PortAudio (Windows/macOS/Linux), and a
+hardware-free simulator."""
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -9,10 +11,48 @@ import numpy as np
 
 from .ring import RingBuffer
 
-try:  # pyalsaaudio is Linux-only; the simulator keeps the app usable elsewhere.
+try:  # Direct ALSA access: Linux only, and an optional extra.
     import alsaaudio
 except Exception:  # pragma: no cover - depends on host
     alsaaudio = None
+
+try:  # PortAudio via sounddevice: Windows, macOS and Linux, binary wheels.
+    import sounddevice
+except Exception:  # pragma: no cover - depends on host
+    sounddevice = None
+
+BACKENDS = ("auto", "alsa", "portaudio", "sim")
+
+# Names that only make sense to ALSA itself; PortAudio's own device names are
+# "Card: description (hw:2,0)" and must not be mistaken for these.
+_ALSA_NAME = re.compile(r"^(hw|plughw|default|sysdefault|front|rear|surround\d+|"
+                        r"iec958|pipewire|pulse|dmix|dsnoop|jack)(:|$)")
+
+
+def looks_like_alsa(device: str) -> bool:
+    return bool(_ALSA_NAME.match((device or "").strip()))
+
+
+def choose_backend(backend: str, device: str, have_alsa: bool | None = None,
+                   have_portaudio: bool | None = None) -> str:
+    """Resolve "auto" to a concrete backend for this host and device name.
+
+    ALSA names go to ALSA when it is available; everything else goes to
+    PortAudio when it is; and whichever of the two exists is the fallback, so
+    a bare "default" still opens something on a Windows box.
+    """
+    have_alsa = (alsaaudio is not None) if have_alsa is None else have_alsa
+    have_portaudio = ((sounddevice is not None) if have_portaudio is None
+                      else have_portaudio)
+    if backend != "auto":
+        return backend
+    if looks_like_alsa(device) and have_alsa:
+        return "alsa"
+    if have_portaudio:
+        return "portaudio"
+    if have_alsa:
+        return "alsa"
+    return "portaudio"
 
 
 FORMATS = ("S16_LE", "S24_3LE", "S32_LE", "FLOAT_LE")
@@ -72,6 +112,27 @@ def list_alsa_devices() -> list[str]:
     return out
 
 
+def list_portaudio_devices() -> list[tuple[int, str]]:
+    """(index, name) of every PortAudio device with input channels."""
+    if sounddevice is None:
+        return []
+    out = []
+    try:
+        for idx, info in enumerate(sounddevice.query_devices()):
+            if int(info.get("max_input_channels", 0)) > 0:
+                out.append((idx, str(info.get("name", ""))))
+    except Exception:
+        return []
+    return out
+
+
+def list_devices() -> list[tuple[str, str]]:
+    """(backend, device) pairs the UI can offer, ALSA first where present."""
+    out = [("alsa", d) for d in list_alsa_devices()]
+    out.extend(("portaudio", "%d: %s" % (i, n)) for i, n in list_portaudio_devices())
+    return out
+
+
 @dataclass
 class SourceConfig:
     device: str = "default"
@@ -81,6 +142,7 @@ class SourceConfig:
     period: int = 1024           # frames per ALSA read
     buffer_seconds: float = 2.0  # ring buffer depth
     simulate: bool = False
+    backend: str = "auto"        # auto | alsa | portaudio | sim
     sim_specs: list = field(default_factory=list)
 
 
@@ -121,6 +183,13 @@ class BaseSource:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    @property
+    def label(self) -> str:
+        """Short "backend: device" for the status bar."""
+        return "%s: %s" % (self.backend_name, self.cfg.device)
+
+    backend_name = "?"
+
     # -- to implement ------------------------------------------------------
     def _open(self) -> None:
         pass
@@ -146,6 +215,8 @@ class BaseSource:
 
 
 class AlsaSource(BaseSource):
+    backend_name = "alsa"
+
     def __init__(self, cfg: SourceConfig):
         super().__init__(cfg)
         self._pcm = None
@@ -194,6 +265,81 @@ class AlsaSource(BaseSource):
         return decode(raw, self.cfg.fmt, self.cfg.channels)
 
 
+class PortAudioSource(BaseSource):
+    """Capture through PortAudio: WASAPI/DirectSound on Windows, CoreAudio on
+    macOS, ALSA or PulseAudio on Linux. Samples arrive as float32 already, so
+    the configured sample format is not used here."""
+
+    backend_name = "portaudio"
+
+    def __init__(self, cfg: SourceConfig):
+        super().__init__(cfg)
+        self._stream = None
+
+    @staticmethod
+    def resolve_device(device: str):
+        """Turn the UI's device text into what sounddevice wants.
+
+        Accepts an index ("3"), the listing's "3: Microphone" form, a name
+        (sounddevice matches substrings itself), or default/blank for the
+        system default input.
+        """
+        text = (device or "").strip()
+        if not text or text == "default":
+            return None
+        head = text.split(":", 1)[0].strip()
+        if head.isdigit():
+            return int(head)
+        return text
+
+    def _open(self) -> None:
+        if sounddevice is None:
+            raise SourceError("sounddevice is not installed (pip install sounddevice)")
+        dev = self.resolve_device(self.cfg.device)
+        try:
+            sounddevice.check_input_settings(device=dev, channels=self.cfg.channels,
+                                             samplerate=self.cfg.rate,
+                                             dtype="float32")
+        except Exception as exc:
+            raise SourceError("PortAudio cannot open %r at %d Hz x %d ch: %s"
+                              % (self.cfg.device, self.cfg.rate,
+                                 self.cfg.channels, exc)) from exc
+        try:
+            self._stream = sounddevice.InputStream(
+                device=dev, channels=self.cfg.channels,
+                samplerate=self.cfg.rate, dtype="float32",
+                blocksize=self.cfg.period, callback=self._callback)
+            self._stream.start()
+        except Exception as exc:
+            self._stream = None
+            raise SourceError("cannot start %r: %s" % (self.cfg.device, exc)) from exc
+        self.cfg.rate = int(round(self._stream.samplerate))
+
+    def _callback(self, indata, frames, _time, status) -> None:
+        if status and getattr(status, "input_overflow", False):
+            self.overruns += 1
+        self.ring.write(np.asarray(indata, dtype=np.float32))
+        self.blocks += 1
+
+    def _run(self) -> None:
+        # PortAudio pushes from its own thread; this one only waits to stop.
+        while not self._stop.wait(0.1):
+            if self._stream is not None and not self._stream.active:
+                self.error = "audio stream stopped"
+                break
+        self._close()
+
+    def _close(self) -> None:
+        if self._stream is not None:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except Exception:
+                pass
+            finally:
+                self._stream = None
+
+
 DEFAULT_SIM = [
     {"wave": "sine", "freq": 1000.0, "amp": 0.8, "offset": 0.0, "phase": 0.0,
      "noise": 0.002},
@@ -208,6 +354,12 @@ class SimSource(BaseSource):
     Lets every UI feature (trigger, cursors, measurements) be exercised without
     a sound card, which also makes the app testable in CI.
     """
+
+    backend_name = "sim"
+
+    @property
+    def label(self) -> str:
+        return "SIM"
 
     def __init__(self, cfg: SourceConfig):
         super().__init__(cfg)
@@ -263,4 +415,9 @@ class SimSource(BaseSource):
 
 
 def make_source(cfg: SourceConfig) -> BaseSource:
-    return SimSource(cfg) if cfg.simulate else AlsaSource(cfg)
+    backend = "sim" if cfg.simulate else choose_backend(cfg.backend, cfg.device)
+    if backend == "sim":
+        return SimSource(cfg)
+    if backend == "alsa":
+        return AlsaSource(cfg)
+    return PortAudioSource(cfg)

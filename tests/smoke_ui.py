@@ -214,6 +214,31 @@ def main() -> int:
           % (win.engine.cfg.hysteresis, win.status_label.text()))
     win.source.cfg.sim_specs = []
 
+    # --- a real PortAudio device, when this host has one -------------------
+    from pyscope import sources
+    inputs = sources.list_portaudio_devices()
+    if inputs:
+        state = resolve_state(parse_args(["--backend", "portaudio",
+                                          "-d", "default", "-c", "1",
+                                          "-r", "48000", "--no-restore"]))
+        win3 = ScopeWindow(settings.state_to_config(state), restore=state)
+        win3.show()
+        assert win3.backend_combo.currentText() == "portaudio"
+        assert not win3.fmt_combo.isEnabled(), "format is ALSA-only"
+        deadline = time.time() + 3.0
+        while time.time() < deadline and (win3.source is None
+                                          or win3.source.blocks < 10):
+            app.processEvents()
+            time.sleep(0.01)
+        assert win3.source is not None and win3.source.running, (
+            "PortAudio capture did not start: %s" % win3.status_label.text())
+        assert win3.source.blocks >= 10, "no audio blocks arrived"
+        assert win3.status_label.text().startswith("portaudio:")
+        print("portaudio live:", win3.status_label.text())
+        win3.close()
+    else:
+        print("portaudio: no input device on this host, live check skipped")
+
     # Leave the screen in a representative state for the screenshot.
     win.autoset()
     deadline = time.time() + 3.0
