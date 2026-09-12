@@ -15,8 +15,9 @@ from .measure import eng, measure
 from . import settings
 from .qtcompat import (ALIGN_HCENTER, DASH_LINE, DASH_DOT_LINE, DOT_LINE,
                        HORIZONTAL, KEY_A, KEY_F, KEY_S, KEY_SPACE, NO_EDIT,
-                       NO_FRAME, SCROLLBAR_OFF, STRETCH, TOOLTIP_ROLE,
-                       WINDOW, readable)
+                       NO_FRAME, POLICY_EXPANDING, POLICY_FIXED,
+                       SCROLLBAR_OFF, STRETCH, TOOLTIP_ROLE, WINDOW,
+                       readable)
 from .sources import (BACKENDS, COMMON_RATES, FORMATS, SourceConfig,
                       SourceError, choose_backend, make_source)
 from .trigger import TriggerConfig, TriggerEngine
@@ -26,6 +27,45 @@ HALF_Y = Y_DIVS / 2.0
 
 CH_COLORS = ["#ffd400", "#00d0ff", "#ff5dd0", "#5dff8f",
              "#ff8c40", "#c0c0ff", "#ff6060", "#40e0d0"]
+
+
+class ContentHeightScroll(QtWidgets.QScrollArea):
+    """A sideways-only scroll area that is exactly as tall as its content.
+
+    The height is reported through sizeHint(), which the enclosing layout
+    asks for when it lays out - after every child exists and the style has
+    polished them. Pushing a fixed pixel height at construction time measured
+    the row before its strips were in place on some hosts and left it a few
+    pixels tall.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setVerticalScrollBarPolicy(SCROLLBAR_OFF)
+        self.setFrameShape(NO_FRAME)
+        self.setSizePolicy(POLICY_EXPANDING, POLICY_FIXED)
+
+    def _content_height(self) -> int:
+        inner = self.widget()
+        if inner is None:
+            return 0
+        hint = inner.sizeHint()
+        height = hint.height() + 2 * self.frameWidth()
+        # Reserve room for the horizontal bar only when it will appear.
+        if hint.width() > max(self.viewport().width(), 1):
+            height += self.horizontalScrollBar().sizeHint().height()
+        return height
+
+    def sizeHint(self):  # noqa: N802
+        return QtCore.QSize(super().sizeHint().width(), self._content_height())
+
+    def minimumSizeHint(self):  # noqa: N802
+        return QtCore.QSize(0, self._content_height())
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self.updateGeometry()     # the bar may have (dis)appeared
 
 
 class ChannelStrip(QtWidgets.QGroupBox):
@@ -97,7 +137,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def __init__(self, cfg: SourceConfig, restore: dict | None = None,
                  parent=None):
         super().__init__(parent)
-        self.setWindowTitle("pyscope - ALSA oscilloscope")
+        self.setWindowTitle("pyscope - audio oscilloscope")
         self.resize(1440, 940)
 
         self.cfg = cfg
@@ -208,13 +248,8 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self.ch_layout = QtWidgets.QHBoxLayout(self.ch_box)
         self.ch_layout.setContentsMargins(4, 0, 4, 0)
         self.ch_layout.addStretch(1)
-        # Horizontal scrolling only, and only once the channels outgrow the
-        # width; the row must never be taller than its strips.
-        ch_scroll = QtWidgets.QScrollArea()
+        ch_scroll = ContentHeightScroll()
         ch_scroll.setWidget(self.ch_box)
-        ch_scroll.setWidgetResizable(True)
-        ch_scroll.setVerticalScrollBarPolicy(SCROLLBAR_OFF)
-        ch_scroll.setFrameShape(NO_FRAME)
         self.ch_scroll = ch_scroll
 
         self.table = QtWidgets.QTableWidget(0, 10)
@@ -271,7 +306,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
         return g
 
     def _input_group(self) -> QtWidgets.QGroupBox:
-        g = QtWidgets.QGroupBox("Input (ALSA)")
+        g = QtWidgets.QGroupBox("Input")
         f = QtWidgets.QFormLayout(g)
 
         self.dev_combo = QtWidgets.QComboBox()
@@ -576,12 +611,9 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._trigger_changed()
 
     def _fit_channel_row(self) -> None:
-        """Give the strip row exactly the height one strip needs."""
-        height = self.ch_box.sizeHint().height() + 6
-        bar = self.ch_scroll.horizontalScrollBar()
-        if bar is not None:
-            height += bar.sizeHint().height()
-        self.ch_scroll.setFixedHeight(height)
+        """The strips changed: have the row re-report its height."""
+        self.ch_box.adjustSize()
+        self.ch_scroll.updateGeometry()
 
     # --------------------------------------------------------------- control
     def _toggle_run(self, checked: bool) -> None:

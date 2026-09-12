@@ -54,6 +54,8 @@ SCROLLBAR_OFF = qt_enum(QtCore.Qt, "ScrollBarPolicy",
                         "ScrollBarAlwaysOff")
 NO_FRAME = qt_enum(QtWidgets.QFrame, "Shape", "NoFrame")
 TOOLTIP_ROLE = qt_enum(QtCore.Qt, "ItemDataRole", "ToolTipRole")
+POLICY_EXPANDING = qt_enum(QtWidgets.QSizePolicy, "Policy", "Expanding")
+POLICY_FIXED = qt_enum(QtWidgets.QSizePolicy, "Policy", "Fixed")
 
 
 def event_pos(event) -> tuple[float, float]:
