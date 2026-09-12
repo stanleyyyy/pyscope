@@ -264,7 +264,7 @@ class ScopeWindow(QtWidgets.QMainWindow):
 
         right = QtWidgets.QWidget()
         rl = QtWidgets.QVBoxLayout(right)
-        rl.setContentsMargins(0, 0, 0, 0)
+        rl.setContentsMargins(0, 6, 8, 6)
         rl.addWidget(self.plot, 1)
         self.cursor_label = QtWidgets.QLabel("")
         self.cursor_label.setStyleSheet("padding:2px;")   # palette colour
@@ -957,11 +957,27 @@ class ScopeWindow(QtWidgets.QMainWindow):
         self._update_measurements(frame)
         self._update_cursor_readout()
 
+    @staticmethod
+    def time_unit(step: float) -> tuple:
+        """(scale, prefix) so a timebase reads as whole ns/us/ms/s."""
+        for scale, prefix in ((1.0, ""), (1e-3, "m"), (1e-6, "µ"), (1e-9, "n")):
+            if step >= scale * 0.999:
+                return scale, prefix
+        return 1e-9, "n"
+
     def _set_ticks(self, lo: float, hi: float) -> None:
         step = self._timebase()
-        xticks = [(lo + i * step, "") for i in range(X_DIVS + 1)]
-        self.pi.getAxis("bottom").setTicks(
-            [[(v, "%.3g" % v) for v, _ in xticks], []])
+        scale, prefix = self.time_unit(step)
+        ticks = []
+        for i in range(X_DIVS + 1):
+            t = lo + i * step
+            v = round(t / scale, 3)
+            if abs(v) < 1e-9:
+                v = 0.0          # keeps "-0" off the axis
+            ticks.append((t, "%g" % v))
+        axis = self.pi.getAxis("bottom")
+        axis.setTicks([ticks, []])
+        self.pi.setLabel("bottom", "time (%ss)" % prefix)
         self.pi.getAxis("left").setTicks(
             [[(d, str(d)) for d in range(-int(HALF_Y), int(HALF_Y) + 1)], []])
 
