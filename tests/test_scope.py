@@ -116,10 +116,18 @@ def test_engine_places_trigger_at_requested_position():
     assert frame is not None and frame.triggered
     assert frame.data.shape == (4800, 2)
     assert frame.trigger_index == 2400
-    assert frame.t[frame.trigger_index] == pytest.approx(0.0, abs=1e-9)
+    # t=0 is the interpolated crossing, which lies between the sample before
+    # the trigger index and the trigger index itself.
+    i = frame.trigger_index
+    assert frame.t[i - 1] < 0.0 <= frame.t[i]
+    assert frame.t[i] <= 1.0 / RATE
     # Signal crosses the level upward at the trigger point.
-    assert frame.data[frame.trigger_index, 0] >= 0.0
-    assert frame.data[frame.trigger_index - 1, 0] <= 0.05
+    assert frame.data[i, 0] >= 0.0
+    assert frame.data[i - 1, 0] <= 0.05
+    # Linear interpolation of the trace at t=0 gives the trigger level.
+    x0, x1 = frame.data[i - 1, 0], frame.data[i, 0]
+    t0, t1 = frame.t[i - 1], frame.t[i]
+    assert x0 + (x1 - x0) * (0.0 - t0) / (t1 - t0) == pytest.approx(0.0, abs=1e-6)
 
 
 def test_engine_position_zero_shows_only_post_trigger():
@@ -127,8 +135,10 @@ def test_engine_position_zero_shows_only_post_trigger():
     block = np.stack([x], axis=1)
     eng_ = TriggerEngine(TriggerConfig(mode=NORMAL, hysteresis=0.05, position=0.0))
     frame = eng_.acquire(block, 0, RATE, 1000)
-    assert frame is not None and frame.trigger_index == 0
-    assert frame.t[0] == pytest.approx(0.0)
+    # One sample before the crossing is kept so the trace reaches the edge
+    # (here the sine hits exactly 0.0 on a sample, so t[0] is exactly 0).
+    assert frame is not None and frame.trigger_index == 1
+    assert frame.t[0] <= 0.0 <= frame.t[1] <= 1.0 / RATE
 
 
 def test_normal_mode_returns_nothing_without_an_edge():
@@ -600,3 +610,21 @@ def test_backend_survives_the_settings_round_trip(store):
     assert resolve_state(parse_args(["--simulate"]))["input"]["backend"] == "sim"
     assert resolve_state(parse_args(["--backend", "alsa"]))["input"]["backend"] == "alsa"
     assert settings.normalise({"input": {"backend": "bogus"}})["input"]["backend"] == "auto"
+
+
+def test_trigger_time_is_stable_across_sample_phase():
+    """With ~10 samples per screen, snapping t=0 to a sample jittered the
+    trace by up to a division. The interpolated crossing must not."""
+    rate = 48000
+    crossings = []
+    for phase in np.linspace(0.0, 2 * np.pi / 48, 7):     # sub-sample shifts
+        t = np.arange(4000) / rate
+        x = np.sin(2 * np.pi * 1000 * t + phase).astype(np.float32)
+        eng_ = TriggerEngine(TriggerConfig(mode=NORMAL, hysteresis=0.05,
+                                           position=0.5))
+        f = eng_.acquire(np.stack([x], axis=1), 0, rate, 20)
+        i = f.trigger_index
+        # where the straight line between the two samples crosses zero
+        x0, x1, t0, t1 = f.data[i - 1, 0], f.data[i, 0], f.t[i - 1], f.t[i]
+        crossings.append(t0 - x0 * (t1 - t0) / (x1 - x0))
+    assert max(abs(c) for c in crossings) < 0.02 / rate

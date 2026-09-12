@@ -214,6 +214,23 @@ def main() -> int:
           % (win.engine.cfg.hysteresis, win.status_label.text()))
     win.source.cfg.sim_specs = []
 
+    # --- traces must span the whole screen even at a few samples/div -------
+    win.trg_mode.setCurrentText("auto")
+    win.tb_knob.setValue(20e-6)                      # 200 us screen = 9.6 samples
+    win.pos_knob.setValue(49)
+    win.frame = None
+    deadline = time.time() + 2.0
+    while time.time() < deadline and win.frame is None:
+        app.processEvents()
+        time.sleep(0.01)
+    lo, hi = win._time_span()
+    assert win.frame.t[0] <= lo, "trace starts %g inside the left edge" % (win.frame.t[0] - lo)
+    assert win.frame.t[-1] >= hi, "trace ends %g inside the right edge" % (hi - win.frame.t[-1])
+    print("20 us/div: record %d samples spans %.1f..%.1f us for a %.0f..%.0f us screen"
+          % (len(win.frame.t), win.frame.t[0] * 1e6, win.frame.t[-1] * 1e6,
+             lo * 1e6, hi * 1e6))
+    win.tb_knob.setValue(1e-3)
+
     # --- a real PortAudio device, when this host has one -------------------
     from pyscope import sources
     inputs = sources.list_portaudio_devices()

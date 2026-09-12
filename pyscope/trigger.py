@@ -46,6 +46,29 @@ def find_edge(x: np.ndarray, level: float, slope: str = RISING,
     return int(fired[0]) + i
 
 
+def level_crossing(x: np.ndarray, idx: int, level: float,
+                   slope: str = RISING) -> int:
+    """Walk back from a hysteresis-qualified sample to the level crossing.
+
+    `find_edge` fires at the first sample beyond `level + hysteresis`; the
+    level itself was crossed at or before that, and that earlier sample is the
+    one t=0 belongs to. Returns k such that the crossing lies in (k-1, k].
+    """
+    x = np.asarray(x)
+    if idx <= 0:
+        return 0
+    if slope == EITHER:
+        slope = RISING if x[idx] >= x[idx - 1] else FALLING
+    k = idx
+    if slope == RISING:
+        while k > 0 and x[k - 1] >= level:
+            k -= 1
+    else:
+        while k > 0 and x[k - 1] <= level:
+            k -= 1
+    return k
+
+
 def refine_edge(x: np.ndarray, idx: int, level: float) -> float:
     """Sub-sample crossing position, so the trace does not jitter by a sample."""
     if idx <= 0 or idx >= len(x):
@@ -103,6 +126,10 @@ class TriggerEngine:
         if record_len < 2 or n < record_len:
             return None
         pre = int(round(min(max(cfg.position, 0.0), 1.0) * (record_len - 1)))
+        if record_len > 2:
+            # Keep the sample before the crossing even at position 0, so the
+            # interpolated t=0 never lands ahead of the first sample.
+            pre = max(pre, 1)
         post = record_len - pre
 
         src = min(max(cfg.source, 0), block.shape[1] - 1)
@@ -127,7 +154,13 @@ class TriggerEngine:
             self.last_trigger_global = start_global + idx
             if cfg.mode == SINGLE:
                 self.armed_single = False
-            return self._frame(block, idx, pre, record_len, rate, True)
+            # Place t=0 on the interpolated level crossing, not the first
+            # sample past the hysteresis band: at a few samples per screen
+            # that whole-sample snap moved the trace by up to a division
+            # between acquisitions.
+            idx = level_crossing(x, idx, cfg.level, cfg.slope)
+            offset = refine_edge(x, idx, cfg.level) - idx
+            return self._frame(block, idx, pre, record_len, rate, True, offset)
 
         if cfg.mode == AUTO:
             # Free-run: show the newest record so the user still sees the signal.
@@ -137,9 +170,11 @@ class TriggerEngine:
 
     @staticmethod
     def _frame(block: np.ndarray, idx: int, pre: int, record_len: int,
-               rate: int, triggered: bool) -> Frame:
+               rate: int, triggered: bool, offset: float = 0.0) -> Frame:
+        """`offset` is the crossing's position relative to sample `idx`, in
+        samples, in (-1, 0]; it shifts the time axis so t=0 is the crossing."""
         s = idx - pre
         data = block[s:s + record_len]
-        t = (np.arange(record_len, dtype=np.float64) - pre) / rate
+        t = (np.arange(record_len, dtype=np.float64) - pre - offset) / rate
         return Frame(data=data, t=t, triggered=triggered, rate=rate,
                      trigger_index=pre)

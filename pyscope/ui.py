@@ -847,8 +847,12 @@ class ScopeWindow(QtWidgets.QMainWindow):
     def _timebase(self) -> float:
         return float(self.tb_knob.value())
 
+    RECORD_MARGIN = 4   # samples beyond the screen, so traces reach both edges
+
     def _record_len(self, rate: int) -> int:
-        n = int(round(self._timebase() * X_DIVS * rate))
+        # Rounded to the screen width, the record's end samples sat inside
+        # the edges - a visible gap once a division is only a sample or two.
+        n = int(math.ceil(self._timebase() * X_DIVS * rate)) + self.RECORD_MARGIN
         cap = max(4, self.source.ring.capacity // 2) if self.source else 1 << 20
         return max(2, min(n, cap))
 
