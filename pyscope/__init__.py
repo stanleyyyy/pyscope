@@ -1,5 +1,5 @@
 """pyscope - a configurable ALSA oscilloscope."""
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 # Screen geometry, shared by the display and the autoset planner.
 X_DIVS = 10

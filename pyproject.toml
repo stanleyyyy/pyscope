@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pyscope"
-version = "0.3.0"
+version = "0.3.1"
 description = "Audio-input oscilloscope for Linux, Windows and macOS: any device, rate or channel count, with triggering, cursors and measurements"
 readme = "README.md"
 license = { text = "MIT" }
@@ -45,6 +45,9 @@ Issues = "https://github.com/stanleyyyy/pyscope/issues"
 
 [tool.setuptools.packages.find]
 include = ["pyscope*"]
+
+[tool.setuptools.package-data]
+pyscope = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

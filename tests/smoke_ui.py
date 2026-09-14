@@ -233,10 +233,30 @@ def main() -> int:
 
     # --- a real PortAudio device, when this host has one -------------------
     from pyscope import sources
-    inputs = sources.list_portaudio_devices()
-    if inputs:
+
+    def delivers(device, seconds=1.0):
+        """Some inputs (virtual Dante receivers, unplugged interfaces) open
+        fine but never produce a sample; only a device that does is usable."""
+        src = sources.PortAudioSource(sources.SourceConfig(
+            device=device, rate=48000, channels=1, period=1024,
+            backend="portaudio"))
+        try:
+            src.start()
+            time.sleep(seconds)
+            return src.blocks > 0
+        except sources.SourceError:
+            return False
+        finally:
+            src.stop()
+
+    candidates = ["default"] + ["%d: %s" % (i, n)
+                                for i, n in sources.list_portaudio_devices()]
+    live = next((d for d in candidates if delivers(d)), None)
+    if live is None:
+        print("portaudio: no input on this host delivers samples, live check skipped")
+    else:
         state = resolve_state(parse_args(["--backend", "portaudio",
-                                          "-d", "default", "-c", "1",
+                                          "-d", live, "-c", "1",
                                           "-r", "48000", "--no-restore"]))
         win3 = ScopeWindow(settings.state_to_config(state), restore=state)
         win3.show()
@@ -249,12 +269,10 @@ def main() -> int:
             time.sleep(0.01)
         assert win3.source is not None and win3.source.running, (
             "PortAudio capture did not start: %s" % win3.status_label.text())
-        assert win3.source.blocks >= 10, "no audio blocks arrived"
+        assert win3.source.blocks >= 10, "no audio blocks arrived from %r" % live
         assert win3.status_label.text().startswith("portaudio:")
         print("portaudio live:", win3.status_label.text())
         win3.close()
-    else:
-        print("portaudio: no input device on this host, live check skipped")
 
     # Leave the screen in a representative state for the screenshot.
     win.autoset()

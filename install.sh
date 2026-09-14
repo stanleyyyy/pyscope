@@ -67,6 +67,9 @@ esac
 
 # --- desktop launcher (Linux) --------------------------------------------
 if [ "$(uname -s)" = "Linux" ]; then
+    icondir="${HOME}/.local/share/icons/hicolor/256x256/apps"
+    mkdir -p "${icondir}"
+    install -m 0644 "${here}/pyscope/assets/pyscope.png" "${icondir}/pyscope.png"
     appdir="${HOME}/.local/share/applications"
     mkdir -p "${appdir}"
     cat > "${appdir}/pyscope.desktop" <<EOF
@@ -75,6 +78,7 @@ Type=Application
 Name=pyscope
 Comment=Audio-input oscilloscope
 Exec=${installed_cmd}
+Icon=pyscope
 Terminal=false
 Categories=AudioVideo;Audio;Science;Electronics;
 Keywords=oscilloscope;scope;audio;alsa;

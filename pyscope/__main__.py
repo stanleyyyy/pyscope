@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import settings
 from .sources import BACKENDS, FORMATS, list_devices
+
+
+def icon_path() -> str:
+    """The program icon, whether run from source or from a PyInstaller bundle."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    name = "pyscope.ico" if sys.platform.startswith("win") else "pyscope.png"
+    return os.path.join(here, "assets", name)
 
 
 def parse_args(argv=None) -> argparse.Namespace:
@@ -84,11 +92,23 @@ def main(argv=None) -> int:
     state = resolve_state(args)
     cfg = settings.state_to_config(state)
 
-    from pyqtgraph.Qt import QtWidgets  # imported late so --list-* stays cheap
+    if sys.platform.startswith("win"):
+        # Without this the taskbar groups the window under python.exe and
+        # shows Python's icon instead of ours when run from source.
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "StanislavRuzani.pyscope")
+        except Exception:
+            pass
+
+    from pyqtgraph.Qt import QtGui, QtWidgets  # imported late so --list-* stays cheap
 
     from .ui import ScopeWindow
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("pyscope")
+    app.setWindowIcon(QtGui.QIcon(icon_path()))
     win = ScopeWindow(cfg, restore=state)
     win.show()
     return app.exec() if hasattr(app, "exec") else app.exec_()

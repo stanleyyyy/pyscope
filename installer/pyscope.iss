@@ -37,6 +37,7 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+SetupIconFile=..\pyscope\assets\pyscope.ico
 UninstallDisplayIcon={app}\{#AppExe}
 ; The bundle is one-directory; remove the whole thing on uninstall.
 UninstallFilesDir={app}\uninstall

@@ -57,11 +57,13 @@ if LINUX:
                 binaries.append((path, "."))
                 break
 
+ICON = os.path.join("pyscope", "assets", "pyscope.ico")
+
 a = Analysis(
     ["launcher.py"],
     pathex=[],
     binaries=binaries,
-    datas=[],
+    datas=[(os.path.join("pyscope", "assets"), os.path.join("pyscope", "assets"))],
     hiddenimports=hidden,
     hookspath=[],
     hooksconfig={},
@@ -103,8 +105,8 @@ common = dict(
 )
 
 gui = EXE(pyz, a.scripts, [], exclude_binaries=True, name="pyscope",
-          console=False, **common)
+          console=False, icon=ICON, **common)
 cli = EXE(pyz, a.scripts, [], exclude_binaries=True, name="pyscope-cli",
-          console=True, **common)
+          console=True, icon=ICON, **common)
 
 coll = COLLECT(gui, cli, a.binaries, a.datas, name="pyscope")
