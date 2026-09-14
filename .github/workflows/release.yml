@@ -114,7 +114,8 @@ jobs:
         run: |
           ./dist/pyscope/pyscope-cli --list-presets
           ./dist/pyscope/pyscope-cli --help > /dev/null
-          ls dist/pyscope | grep -i portaudio   # bundled, so no libportaudio2 needed on target
+          # PortAudio must be inside the bundle so targets need no libportaudio2.
+          find dist/pyscope -name 'libportaudio*' | grep . || { echo "PortAudio not bundled"; exit 1; }
 
       - name: Stage artifacts
         run: |
