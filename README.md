@@ -309,7 +309,7 @@ build.bat
 ```
 
 builds `dist\pyscope\` with PyInstaller on Windows;
-`installeruild_installer.bat` then wraps it into `installer\Output\pyscope-Setup.exe`
+`installer\build_installer.bat` then wraps it into `installer\Output\pyscope-Setup.exe`
 with Inno Setup (`scoop install inno-setup`). On Linux, `pip install .
 pyinstaller && pyinstaller pyscope.spec` produces `dist/pyscope/`. The spec
 builds one shared directory with both launchers rather than a single file,
