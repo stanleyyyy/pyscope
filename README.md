@@ -12,6 +12,29 @@ sound card, so the UI can be developed and tested anywhere.
 
 ## Install
 
+### Downloads (no Python needed)
+
+Every tagged release on the
+[Releases page](https://github.com/stanleyyyy/pyscope/releases) carries
+ready-made bundles:
+
+| file | what it is |
+| --- | --- |
+| `pyscope-<ver>-windows-x64-Setup.exe` | Windows installer: Start Menu and optional Desktop shortcuts, per-user (no admin prompt), clean uninstall, optionally puts `pyscope-cli` on your PATH |
+| `pyscope-<ver>-windows-x64-portable.zip` | The same bundle as a folder — unzip anywhere and run `pyscope.exe` |
+| `pyscope-<ver>-linux-x64.tar.gz` | Linux bundle with PortAudio and the direct-ALSA backend built in; untar and run `pyscope/pyscope` |
+
+The bundles contain two launchers: `pyscope` opens the GUI with no console
+window, and `pyscope-cli` is the same program with a console attached so
+`--list-devices` and `--list-presets` can print. Windows may show a SmartScreen
+notice the first time, since the executables are not code-signed — "More info"
+→ "Run anyway".
+
+On Linux the bundle still needs the desktop's usual Qt platform libraries
+(notably `libxcb-cursor0` on Ubuntu 24.04+); everything else is inside.
+
+### From source
+
 pyscope is a normal Python package with a `pyscope` command. The recommended
 way to install a Python application system-wide is [pipx](https://pipx.pypa.io),
 which puts it in its own isolated environment and links the command onto your
@@ -27,6 +50,10 @@ or from a clone:
 ```bash
 pipx install .
 ```
+
+On Linux and macOS `./install.sh` does that for you — pipx if present,
+otherwise a private virtualenv — and adds a desktop launcher; `./install.sh
+--alsa` includes the direct-ALSA backend.
 
 Then, from anywhere:
 
@@ -274,6 +301,28 @@ writes the record currently on screen (time column plus one column per channel).
 Capture runs in its own thread and only ever appends to the ring buffer; the UI
 timer (40 Hz) takes a snapshot, searches it for a trigger and redraws. The two
 never block each other, so a slow repaint costs frames but never samples.
+
+## Building the bundles yourself
+
+```bash
+build.bat
+```
+
+builds `dist\pyscope\` with PyInstaller on Windows;
+`installeruild_installer.bat` then wraps it into `installer\Output\pyscope-Setup.exe`
+with Inno Setup (`scoop install inno-setup`). On Linux, `pip install .
+pyinstaller && pyinstaller pyscope.spec` produces `dist/pyscope/`. The spec
+builds one shared directory with both launchers rather than a single file,
+because a one-file Qt application unpacks ~130 MB on every launch.
+
+`.github/workflows/release.yml` runs the tests on every push, builds both
+platforms on every push to `main`, and on a `v*` tag attaches the installer,
+the portable zip and the Linux tarball to a GitHub Release. To cut a release:
+bump `version` in `pyproject.toml`, commit, then
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 ## Tests
 

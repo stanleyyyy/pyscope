@@ -1,0 +1,144 @@
+name: Build & Release
+
+# Test on every push and PR. Build the standalone bundles on every push to
+# main (for verification) and, when a version tag is pushed (e.g. v0.3.0),
+# attach them to a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to create the Release
+
+jobs:
+  # ---------------------------------------------------------------------------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System libraries (PortAudio runtime, Qt xcb platform)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2 libxcb-cursor0 libegl1 libxkbcommon0
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install ".[dev]"
+      - name: Unit tests
+        run: python -m pytest -q
+      - name: UI smoke test (offscreen)
+        run: python tests/smoke_ui.py smoke.png
+        env:
+          QT_QPA_PLATFORM: offscreen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke-screenshot
+          path: smoke.png
+
+  # ---------------------------------------------------------------------------
+  windows:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version from pyproject
+        id: ver
+        shell: bash
+        run: echo "version=$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
+
+      - name: Install deps
+        run: python -m pip install --upgrade pip && python -m pip install . pyinstaller
+
+      - name: Build bundle
+        run: python -m PyInstaller --noconfirm --clean pyscope.spec
+
+      - name: Smoke-run the built exe
+        shell: bash
+        run: |
+          ./dist/pyscope/pyscope-cli.exe --list-presets
+          ./dist/pyscope/pyscope-cli.exe --help > /dev/null
+
+      - name: Build installer (Inno Setup)
+        run: iscc /DAppVersion=${{ steps.ver.outputs.version }} installer\pyscope.iss
+        # Inno Setup ships preinstalled on GitHub's windows-latest runners.
+
+      - name: Stage artifacts
+        shell: bash
+        run: |
+          mkdir -p out
+          cp installer/Output/pyscope-Setup.exe out/pyscope-${{ steps.ver.outputs.version }}-windows-x64-Setup.exe
+          (cd dist && 7z a -tzip ../out/pyscope-${{ steps.ver.outputs.version }}-windows-x64-portable.zip pyscope > /dev/null)
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+
+  # ---------------------------------------------------------------------------
+  linux:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04     # oldest glibc we can build on = widest compatibility
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version from pyproject
+        id: ver
+        run: echo "version=$(python -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')" >> "$GITHUB_OUTPUT"
+
+      - name: System libraries (PortAudio, ALSA headers, Qt xcb platform)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libportaudio2 libasound2-dev libxcb-cursor0 libegl1 libxkbcommon0
+
+      - name: Install deps (with the direct-ALSA backend)
+        run: python -m pip install --upgrade pip && python -m pip install ".[alsa]" pyinstaller
+
+      - name: Build bundle
+        run: python -m PyInstaller --noconfirm --clean pyscope.spec
+
+      - name: Smoke-run the built binary
+        run: |
+          ./dist/pyscope/pyscope-cli --list-presets
+          ./dist/pyscope/pyscope-cli --help > /dev/null
+          ls dist/pyscope | grep -i portaudio   # bundled, so no libportaudio2 needed on target
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p out
+          tar -C dist -czf out/pyscope-${{ steps.ver.outputs.version }}-linux-x64.tar.gz pyscope
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [windows, linux]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true

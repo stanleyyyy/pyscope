@@ -8,3 +8,4 @@ tests/_smoke_config/
 *.egg-info/
 build/
 dist/
+installer/Output/
